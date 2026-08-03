@@ -1,0 +1,2 @@
+cryptography>=43,<47
+requests>=2.32,<3
