@@ -16,16 +16,28 @@ LOGGER = logging.getLogger(__name__)
 
 def run() -> int:
     """Validate authentication and production response shapes without trading."""
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
     try:
         config = BotConfig.from_env()
         client = RevolutXClient(config.api_key, config.private_key_path)
 
         pair_key = _pair_key(config.symbol)
-        pairs = client.get_pair_configuration(config.region)
-        if pair_key not in pairs:
-            raise RevolutXError(f"pair configuration missing for {pair_key}")
-        rules = PairRules.from_api(pair_key, pairs[pair_key])
+        account_pairs = client.get_account_pair_configuration()
+        if pair_key not in account_pairs:
+            raise RevolutXError(
+                f"account pair configuration missing for {pair_key}"
+            )
+        rules = PairRules.from_api(pair_key, account_pairs[pair_key])
+
+        if config.region:
+            public_pairs = client.get_pair_configuration(config.region)
+            if pair_key not in public_pairs:
+                raise RevolutXError(
+                    f"public pair configuration missing for {pair_key} in {config.region}"
+                )
 
         balances = client.get_balances()
         tickers, exchange_ts = client.get_tickers()
@@ -50,7 +62,7 @@ def run() -> int:
             config.quote_currency,
         )
         return 0
-    except (KeyError, ValueError, ArithmeticError, RevolutXError) as exc:
+    except (KeyError, TypeError, ValueError, ArithmeticError, RevolutXError) as exc:
         LOGGER.error("SMOKE TEST FAIL: %s", exc)
         return 1
 
