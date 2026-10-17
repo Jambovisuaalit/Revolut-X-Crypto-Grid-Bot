@@ -8,8 +8,12 @@ permissions:
   contents: read
 jobs:
   safety:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -23,6 +27,7 @@ jobs:
         run: python -m unittest discover -s tests -v
 
       - name: Read-only official public API smoke probe (non-gating)
+        if: matrix.os == 'ubuntu-latest'
         continue-on-error: true
         env:
           LIVE_TRADING: "false"
