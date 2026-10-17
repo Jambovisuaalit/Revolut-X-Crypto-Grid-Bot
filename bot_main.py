@@ -89,7 +89,7 @@ class GridBotSupervisor:
                 raise ValueError("persisted initial equity must be positive")
             breached = (initial - current_equity) / initial * Decimal("100") >= self.DRAWDOWN_LIMIT_PERCENT
             already_halted = self._metadata("kill_switch_triggered") == "true"
-            if breached:
+            if breached and not already_halted:
                 self._set_metadata("kill_switch_triggered", "true")
                 self._set_metadata("cancellation_verification_status", "CANCELLATION_UNVERIFIED")
             halted = breached or already_halted
