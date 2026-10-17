@@ -171,7 +171,18 @@ def inspect_local_runtime(db_path: Path | None, now_ms: int | None = None) -> di
                 cancel = "NOT_VERIFIED"
             if cancel != "VERIFIED_NO_ACTIVE_ORDERS":
                 cancel = "NOT_VERIFIED"
-            # Query immutable local journal only; no venue IDs, quantities or prices leave here.
+            # Validate the ENTIRE local journal before showing even a capped
+            # event subset. Unsafe old rows must not be hidden by a 40-row LIMIT.
+            known_order_states = tuple(sorted(VALID_ORDER_STATES))
+            placeholders = ",".join("?" for _ in known_order_states)
+            unexpected = db.execute(
+                "SELECT COUNT(*) FROM order_lineage WHERE status NOT IN (" +
+                placeholders + ") OR side NOT IN ('buy','sell')",
+                known_order_states,
+            ).fetchone()[0]
+            if unexpected:
+                raise ValueError("UNKNOWN_LOCAL_ORDER_STATES")
+            # Query local journal only; no venue IDs, quantities or prices leave here.
             journal = db.execute(
                 "SELECT status,side,created_at FROM order_lineage "
                 "ORDER BY created_at DESC, rowid DESC LIMIT ?", (MAX_EVENTS,)
