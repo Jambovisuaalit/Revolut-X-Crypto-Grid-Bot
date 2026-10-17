@@ -6,6 +6,7 @@ The trading engine's schema and journal remain owned by GridExecutor.
 """
 from __future__ import annotations
 
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
@@ -117,7 +118,7 @@ def inspect_local_runtime(db_path: Path | None, now_ms: int | None = None) -> di
             return _empty("BLOCKED", "INVALID_CLOCK")
         # as_uri percent-escapes Windows paths, whitespace, # and ?.
         uri = path.resolve().as_uri() + "?mode=ro"
-        with sqlite3.connect(uri, uri=True, timeout=0.5) as db:
+        with closing(sqlite3.connect(uri, uri=True, timeout=0.5)) as db:
             db.execute("PRAGMA query_only=ON")
             db.execute("PRAGMA busy_timeout=500")
             db.execute("BEGIN")
