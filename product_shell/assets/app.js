@@ -70,7 +70,9 @@ function renderRuntime(info) {
       new Intl.DateTimeFormat("fi-FI", {dateStyle:"short",timeStyle:"short"}).format(date) + " · " :
       "Aikaleima epäselvä · ";
     const label = document.createElement("span");
-    label.textContent = String(event.label || "Tunnistamaton kirjaus");
+    const context = event.timestamp_kind === "ORDER_CREATED_AT" ?
+      "Tilauksen luontiaika · " : "Kirjausaika · ";
+    label.textContent = context + String(event.label || "Tunnistamaton kirjaus");
     item.append(stamp, label);
     if (event.uncertain) item.className = "runtime-danger";
     list.appendChild(item);
