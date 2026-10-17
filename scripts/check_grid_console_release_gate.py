@@ -16,9 +16,9 @@ def main() -> None:
     parser.add_argument("--output",required=True,type=Path)
     args=parser.parse_args()
     blocked = {
-        "account_readonly_auth":"NOT_VERIFIED",
-        "private_key_windows_vault":"NOT_IMPLEMENTED",
-        "signed_windows_installer":"NOT_IMPLEMENTED",
+        "account_readonly_auth":"MOCK_TESTED_REAL_ACCOUNT_NOT_VERIFIED",
+        "private_key_windows_vault":"WINDOWS_DPAPI_TESTED_NO_CUSTOMER_KEYS",
+        "signed_windows_installer":"UNSIGNED_DEV_INSTALLER_ONLY_NO_TRUSTED_SIGNATURE",
         "venue_reconciliation_live":"NOT_APPROVED",
         "live_order_mutations":"BLOCKED",
         "24h_real_collector_host_evidence":"NOT_VERIFIED",
@@ -35,6 +35,9 @@ def main() -> None:
         "release_blockers":blocked,
         "orders_sent":0,
         "buyer_funds_used_eur":"0",
+        "app_integration":"SOURCE_TREE_MERGED_NOT_CUSTOMER_READY",
+        "customer_installable_ui":"NOT_BUILT_SIGNED",
+        "real_account_get_calls":"NOT_RUN",
     }
     args.output.parent.mkdir(parents=True,exist_ok=True)
     args.output.write_text(json.dumps(report,indent=2,sort_keys=True)+"\n",encoding="utf-8")
