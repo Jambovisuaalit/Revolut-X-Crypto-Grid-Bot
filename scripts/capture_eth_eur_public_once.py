@@ -26,7 +26,12 @@ def main() -> int:
     for dest, record in ((args.capture, capture), (args.report, report)):
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(json.dumps(report, sort_keys=True))
+    # Print only public market fields; never authentication, cookies or headers.
+    if capture.get("pair_rules"):
+        print("PUBLIC_ETH_EUR_PAIR_RULES " + json.dumps(capture["pair_rules"], sort_keys=True))
+    for item in capture["books"]:
+        print("PUBLIC_ETH_EUR_BOOK " + json.dumps(item, sort_keys=True))
+    print("PUBLIC_ETH_EUR_REPORT " + json.dumps(report, sort_keys=True))
     return 0 if report["status"] == "READY_FOR_OFFLINE_INSPECTION" else 2
 
 
