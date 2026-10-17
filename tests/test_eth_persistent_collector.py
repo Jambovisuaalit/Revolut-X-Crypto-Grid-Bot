@@ -1,6 +1,7 @@
 """Persistent ETH/EUR collector tests; no network, live client or accounts."""
 from __future__ import annotations
 
+from contextlib import closing
 from copy import deepcopy
 import json
 from decimal import Decimal
@@ -48,7 +49,7 @@ class PersistentReadOnlyTests(unittest.TestCase):
         self.assertEqual(report["shadow_forward_status"], "NOT_STARTED")
         self.assertEqual(report["economic_approval"], "NO_GO")
         self.assertIn("WARMUP_UNDER_24H", report["alerts"])
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db:
             raw = json.loads(db.execute(
                 "SELECT payload_json FROM books WHERE accepted=1 LIMIT 1").fetchone()[0])
             self.assertEqual(raw["payload"]["metadata"]["region"], "EEA")
@@ -72,7 +73,7 @@ class PersistentReadOnlyTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError,"LEASE_LOST"):
                     first.record_book(BASE+62000, None, None, None, "stale")
                 second.record_book(BASE+62000, None, None, None, "no-source")
-            with sqlite3.connect(self.path) as db:
+            with closing(sqlite3.connect(self.path)) as db:
                 self.assertEqual(db.execute("SELECT COUNT(*) FROM books").fetchone()[0],1)
 
     def test_persist_03_pair_rules_drift_blocks_future_accepted_book(self):
@@ -119,7 +120,7 @@ class PersistentReadOnlyTests(unittest.TestCase):
             c.store.acquire(BASE)
             c.poll()
             c.store.release(BASE)
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db:
             row=db.execute("SELECT seq,payload_json FROM books LIMIT 1").fetchone()
             tampered=json.loads(row[1])
             tampered["payload"]["data"]["bids"][0]["price"]="1"
