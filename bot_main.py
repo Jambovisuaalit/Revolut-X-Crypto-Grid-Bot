@@ -133,14 +133,14 @@ def offline_main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ticks", type=int, default=3,
                         help="Bounded observations (1..1000), never daemon mode")
     parser.add_argument("--interval-ms", type=int, default=100,
-                        help="Delay between fixture observations, 0..60000")
+                        help="Delay between fixture observations, 0..10000")
     parser.add_argument("--fixture-equity", type=str, default="1000",
                         help="Synthetic EUR balance, not customer money")
     parser.add_argument("--report", type=pathlib.Path)
     args = parser.parse_args(argv)
     if not args.offline_fixture or args.db is None:
         parser.error("--offline-fixture and --db must both be explicitly supplied")
-    if not 1 <= args.ticks <= 1000 or not 0 <= args.interval_ms <= 60000:
+    if not 1 <= args.ticks <= 1000 or not 0 <= args.interval_ms <= 10000:
         parser.error("invalid bounded ticks or interval")
     if args.db.name.lower() in ("bot_state.db", "collector.sqlite"):
         parser.error("refusing live or collector DB filename")
