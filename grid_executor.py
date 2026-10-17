@@ -102,6 +102,16 @@ class GridExecutor:
             },
         }
 
+    @staticmethod
+    def _replace_payload(order: OrderRequest) -> dict[str, Any]:
+        """PUT /orders/{id} uses a FLAT body, unlike POST order_configuration."""
+        return {
+            "client_order_id": order.client_order_id,
+            "price": decimal_text(order.price),
+            "base_size": decimal_text(order.quantity),
+            "execution_instructions": ["post_only"],
+        }
+
     def _validated_order(
         self, client_order_id: str, symbol: str, side: str, price: Decimal, quantity: Decimal
     ) -> OrderRequest:
@@ -210,7 +220,7 @@ class GridExecutor:
                 child_id, parent["symbol"], parent["side"], new_price,
                 decimal_from_api(parent["leaves_quantity"], "leaves_quantity")
             )
-            payload = self._payload(order)
+            payload = self._replace_payload(order)
             existing = self.connection.execute(
                 "SELECT 1 FROM order_lineage WHERE client_order_id=?", (child_id,)
             ).fetchone()
@@ -327,8 +337,9 @@ class GridExecutor:
                     status, filled, leaves = self._order_status(item)
                     if row["status"] == "pending_replace":
                         parent_id = row["parent_venue_order_id"]
-                        if not parent_id or parent_id == item["id"]:
-                            raise ReconciliationError("invalid replacement lineage")
+                        if (not parent_id or parent_id == item["id"]
+                                or item.get("previous_order_id") != parent_id):
+                            raise ReconciliationError("unverified replacement parent linkage")
                         if parent_id in active_by_id:
                             raise ReconciliationError("parent and replacement both active; manual review required")
                         self.connection.execute(
