@@ -43,7 +43,7 @@ class PairRules:
     @classmethod
     def from_api(cls, payload: Mapping[str, Any]) -> "PairRules":
         """Build validated rules from a configuration response item."""
-        required = ("symbol", "base_step", "quote_step", "min_order_size", "max_order_size", "min_order_size_quote", "status")
+        required = ("base", "quote", "base_step", "quote_step", "min_order_size", "max_order_size", "min_order_size_quote", "status")
         if any(key not in payload for key in required):
             raise PrecisionError("pair configuration is missing required fields")
         rules = cls(
