@@ -24,6 +24,8 @@ PUBLIC_URL = "https://revx.revolut.com/api/2.0/public/order-book/BTC-USD"
 
 
 def parse_timestamp(value: str) -> datetime:
+    if not isinstance(value, str):
+        raise ValueError("source timestamp must be a string")
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if parsed.tzinfo is None:
         raise ValueError("snapshot timestamp requires timezone")
@@ -99,13 +101,13 @@ class ShadowRunner:
     def evaluate(self, payload: dict[str, Any], now: datetime | None = None) -> dict[str, Any]:
         timestamp = None
         now = now or datetime.now(timezone.utc)
-        if now.tzinfo is None:
-            raise ValueError("now must have timezone")
         reasons = []
         action = "HOLD"
         price = None
         bid = ask = None
         try:
+            if now.tzinfo is None:
+                raise ValueError("now must be timezone-aware")
             timestamp = parse_timestamp(payload["timestamp"])
             bid, bid_size, ask, ask_size = parse_book(payload)
             price = (bid + ask) / 2
@@ -148,6 +150,11 @@ class ShadowRunner:
                     action = "PAPER_MAKER_FILL_ASSUMED"
                     reasons.append("CONSERVATIVE_CROSSING_HEURISTIC_NOT_QUEUE_PROOF")
                 self.pending_buy = None
+                # Post-fill equity includes fee and the newly acquired position.
+                post_fill_nav = self.cash + self.btc * bid
+                if post_fill_nav <= self.cfg.initial_usd * (1 - self.cfg.max_drawdown):
+                    self.halted = True
+                    reasons.append("DRAWDOWN_LIMIT_POST_FILL")
             else:
                 reasons.append("POSITION_HELD")
         except (ValueError, KeyError, TypeError, ArithmeticError) as exc:
