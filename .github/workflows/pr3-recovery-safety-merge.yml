@@ -35,7 +35,7 @@ jobs:
       - name: Full offline unit and failure injection matrix
         run: python -m unittest discover -s tests -v
       - name: Explicit cancellation verification test suite
-        run: python -m unittest tests.test_cancellation_gate -v
+        run: python -m unittest discover -s tests -p test_cancellation_gate.py -v
       - name: Persisted kill-switch drawdown / restart integration (mock exchange)
         run: python scripts/drawdown_integration.py
       - name: Hard process exit / restart / idempotency integration (mock exchange)
