@@ -5,6 +5,7 @@ from hashlib import sha256
 import json
 from pathlib import Path
 import sqlite3
+import time
 
 from .config import Config
 from .engine import fresh_state, transition
@@ -30,7 +31,17 @@ class Journal:
         self.db = sqlite3.connect(str(file), timeout=10, isolation_level=None)
         try:
             self.db.execute("PRAGMA busy_timeout=10000")
-            self.db.execute("PRAGMA journal_mode=WAL")
+            # Two independent processes can race the first WAL initialization.
+            # Busy timeout does not always cover PRAGMA journal_mode; retry only
+            # SQLITE_BUSY/locked, never malformed state or other database faults.
+            for attempt in range(12):
+                try:
+                    self.db.execute("PRAGMA journal_mode=WAL")
+                    break
+                except sqlite3.OperationalError as exc:
+                    if "locked" not in str(exc).lower() or attempt == 11:
+                        raise
+                    time.sleep(0.05 * (attempt + 1))
             self.db.execute("PRAGMA synchronous=FULL")
             self.db.execute("CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL)")
             self.db.execute("""
