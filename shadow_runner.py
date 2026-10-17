@@ -253,10 +253,16 @@ def public_snapshot() -> dict[str, Any]:
         raise ValueError("unexpected public response")
     # Reception time is not exchange event time; without a trusted source timestamp
     # the observation cannot establish market-data freshness.
-    source = data.get("data", data)
-    if not isinstance(source, dict) or "timestamp" not in source:
-        raise ValueError("public order book lacks verified source timestamp")
-    return {"timestamp": source["timestamp"], "received_at": datetime.now(timezone.utc).isoformat(), "data": source}
+    source = data.get("data")
+    metadata = data.get("metadata")
+    if not isinstance(source, dict) or not isinstance(metadata, dict):
+        raise ValueError("public book envelope or metadata missing")
+    milliseconds = metadata.get("timestamp")
+    if type(milliseconds) is not int or milliseconds <= 0:
+        raise ValueError("unverified source timestamp")
+    source_time = datetime.fromtimestamp(milliseconds / 1000, timezone.utc)
+    received_at = datetime.now(timezone.utc)
+    return {"timestamp": source_time.isoformat(), "received_at": received_at.isoformat(), "data": source}
 
 
 def _valid_timestamp(value: str) -> bool:
