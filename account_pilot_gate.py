@@ -81,8 +81,7 @@ class GuardedGetTransport:
                 try:
                     self._ledger.seal()
                 except Exception:
-                    # The session cannot resume if persistence is uncertain.
-                    pass
+                    raise PilotGateError("PILOT_LEDGER_SEAL_FAILED") from None
 
     @staticmethod
     def _check_url(url: str) -> None:
@@ -189,12 +188,17 @@ class BoundedPilotSession:
         self._used = True
         try:
             result = self.reader.snapshot()
+            self.guard.halt()  # budget must seal before success is reported
             self._status = "SCHEMA_PARSED_NOT_RECONCILED"
-            self.guard.halt()  # do not allow a second read from this session
             return result
-        except Exception:
+        except BaseException as exc:
             self._status = "BLOCKED"
-            self.guard.halt()
+            try:
+                self.guard.halt()
+            except Exception:
+                pass  # already blocked; cannot approve a failed seal
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise
             raise PilotGateError("PILOT_SNAPSHOT_REJECTED") from None
 
     def report(self) -> dict[str, Any]:
