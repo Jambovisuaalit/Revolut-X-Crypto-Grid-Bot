@@ -201,7 +201,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.report.parent.mkdir(parents=True, exist_ok=True)
                 args.report.write_text(json.dumps(result, sort_keys=True, indent=2) + "\n",
                                        encoding="utf-8")
-            print(json.dumps(result, sort_keys=True))
+            if sys.stdout is not None:
+                print(json.dumps(result, sort_keys=True))
             return 0
         return run_gui(open_browser=not args.no_auto_browser)
     except Exception:
