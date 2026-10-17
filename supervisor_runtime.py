@@ -122,7 +122,7 @@ class SupervisorRuntime:
         value = SupervisorState.RISK_LOCKED if risk else SupervisorState.BLOCKED
         try:
             self._store_state(value, reason=reason)
-        except (SupervisorBlocked, Exception):
+        except Exception:
             # Never overwrite another process's lease or mask original fault.
             self.state = value
         self.started = False
@@ -135,7 +135,7 @@ class SupervisorRuntime:
         with self.executor._write_transaction():
             prev_owner = self._value("supervisor_owner")
             prev_until = int(self._value("supervisor_lease_until_ms") or "0")
-            if prev_owner and prev_owner != self.owner and prev_until >= now:
+            if prev_owner and prev_until >= now:
                 raise SupervisorBlocked("SUPERVISOR_ALREADY_OWNED")
             if self._value("kill_switch_triggered") == "true":
                 self.state = SupervisorState.RISK_LOCKED
@@ -235,7 +235,7 @@ class SupervisorRuntime:
         """Explicit, bounded offline fixture only; never runs a background daemon."""
         if type(ticks) is not int or not 1 <= ticks <= 1000:
             raise ValueError("ticks must be in [1,1000]")
-        if not 0 <= poll_interval_seconds <= 60:
+        if not 0 <= poll_interval_seconds <= 10:
             raise ValueError("invalid poll interval")
         result = "FAIL"
         try:
