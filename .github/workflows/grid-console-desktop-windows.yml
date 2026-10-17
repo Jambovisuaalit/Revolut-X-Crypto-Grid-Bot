@@ -23,6 +23,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - name: Python and Inno Setup build dependencies
         shell: pwsh
         run: |
@@ -53,12 +56,36 @@ jobs:
           if ($probe.ExitCode -ne 0) { throw 'INSTALLED_GUI_SELF_TEST_FAILED' }
           $report=Get-Content -LiteralPath $out -Raw | ConvertFrom-Json
           if ($report.status -ne 'DEV_DESKTOP_PASS' -or
+              $report.ui -ne 'GRID_CONSOLE_REACT_LOCAL_GUI' -or
+              $report.react_assets -lt 2 -or
+              $report.runtime_status -ne 'NOT_CONFIGURED' -or
               $report.local_assets -ne 'VERIFIED' -or
               $report.http_bind -ne '127.0.0.1' -or
               $report.account_connection -ne 'NOT_CONNECTED' -or
               $report.live_orders -ne 'DISABLED' -or
               $report.exchange_mutations -ne 0 -or
               $report.sellable_product -ne 'NO_GO') { throw 'INSTALLED_GUI_UNSAFE' }
+      - name: Verify installed EXE reads risk-locked synthetic SQLite without writes
+        shell: pwsh
+        run: |
+          $exe=Join-Path $env:RUNNER_TEMP 'grid-console-desktop-installed/GridConsoleDesktop.exe'
+          $fixture=Join-Path $env:RUNNER_TEMP 'grid-console-risk-fixture.sqlite'
+          python scripts/create_grid_console_offline_fixture.py --output $fixture
+          if ($LASTEXITCODE -ne 0) { throw 'FIXTURE_CREATION_FAILED' }
+          $before=(Get-FileHash -LiteralPath $fixture -Algorithm SHA256).Hash
+          $out=Join-Path (Get-Location) 'windows-artifacts/installed-react-sqlite-risk.json'
+          $probe=Start-Process -FilePath $exe -ArgumentList @('--self-test','--supervisor-db',$fixture,'--report',$out) -Wait -PassThru
+          if ($probe.ExitCode -ne 0) { throw 'INSTALLED_SQLITE_SELF_TEST_FAILED' }
+          $raw=Get-Content -LiteralPath $out -Raw
+          $data=$raw | ConvertFrom-Json
+          if ($data.runtime_status -ne 'RISK_LOCKED' -or
+              $data.risk_lock -ne 'TRIGGERED' -or
+              $data.uncertain_order_count -ne 1 -or
+              $data.local_event_count -ne 2 -or
+              $raw.Contains('SECRET-')) { throw 'INSTALLED_RISK_DISPLAY_UNSAFE' }
+          $after=(Get-FileHash -LiteralPath $fixture -Algorithm SHA256).Hash
+          if ($before -ne $after) { throw 'INSTALLED_SQLITE_WAS_MODIFIED' }
+          Remove-Item -LiteralPath $fixture -Force
       - name: Verify graphical window opens and closes without browser
         shell: pwsh
         run: |
