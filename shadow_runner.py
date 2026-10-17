@@ -256,7 +256,7 @@ def public_snapshot() -> dict[str, Any]:
     source = data.get("data", data)
     if not isinstance(source, dict) or "timestamp" not in source:
         raise ValueError("public order book lacks verified source timestamp")
-    return {"timestamp": source["timestamp"], "data": source}
+    return {"timestamp": source["timestamp"], "received_at": datetime.now(timezone.utc).isoformat(), "data": source}
 
 
 def _valid_timestamp(value: str) -> bool:
