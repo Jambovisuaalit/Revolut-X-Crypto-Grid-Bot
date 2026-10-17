@@ -1,0 +1,55 @@
+name: Signed Account GET Only - Offline Contract Gate
+on:
+  push:
+    branches:
+      - feat/authenticated-get-only-account-reader
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  mocked-account-contract:
+    name: signed-account-readonly (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      LIVE_TRADING: "false"
+      DRY_RUN: "true"
+      PYTHONPATH: ${{ github.workspace }}
+      ACCOUNT_NETWORK_TESTS: "DISABLED"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install existing library dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Compile all existing Python modules
+        run: python -m compileall -q bot_main.py account_readonly.py supervisor_runtime.py grid_executor.py tests scripts
+      - name: Signed GET-only account adapter mock contract tests
+        run: python -m unittest tests.test_authenticated_account_readonly -v
+      - name: Full existing offline risk and lifecycle test matrix
+        run: python -m unittest discover -s tests -v
+      - name: Exact structural GET-only report (no authenticated network)
+        run: python scripts/check_authenticated_get_only.py --commit-sha ${{ github.sha }} --output account-readonly-artifacts/get-only-verdict.json
+      - name: Process crash/recovery regression with mock exchange
+        run: python scripts/process_recovery_integration.py
+      - name: Persistent drawdown regression with mock exchange
+        run: python scripts/drawdown_integration.py
+      - name: Validate process recovery and drawdown report counters
+        run: python scripts/check_pr3_recovery_gate.py --report-dir recovery-artifacts --commit-sha ${{ github.sha }}
+      - name: Upload results, including on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-get-only-contract-${{ matrix.os }}
+          path: |
+            account-readonly-artifacts/get-only-verdict.json
+            recovery-artifacts/*.json
+          if-no-files-found: warn
