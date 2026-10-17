@@ -97,14 +97,16 @@ class ShadowRunner:
         self.pending_buy: Decimal | None = None
 
     def evaluate(self, payload: dict[str, Any], now: datetime | None = None) -> dict[str, Any]:
-        timestamp = parse_timestamp(payload["timestamp"])
+        timestamp = None
         now = now or datetime.now(timezone.utc)
         if now.tzinfo is None:
             raise ValueError("now must have timezone")
         reasons = []
         action = "HOLD"
         price = None
+        bid = ask = None
         try:
+            timestamp = parse_timestamp(payload["timestamp"])
             bid, bid_size, ask, ask_size = parse_book(payload)
             price = (bid + ask) / 2
             if self.last_time is not None and timestamp <= self.last_time:
@@ -154,7 +156,7 @@ class ShadowRunner:
             reasons.append("DATA_ERROR:" + type(exc).__name__)
         nav = self.cash + self.btc * (self.last_mark if self.last_mark is not None else Decimal("0"))
         decision = {
-            "timestamp": payload.get("timestamp"),
+            "timestamp": payload.get("timestamp") if isinstance(payload, dict) else None,
             "action": action,
             "reasons": reasons,
             "bid": fmt(bid) if price is not None else None,
@@ -162,7 +164,7 @@ class ShadowRunner:
             "cash_usd": fmt(self.cash),
             "btc": fmt(self.btc),
             "nav_usd": fmt(nav),
-            "fees_plus_slippage_usd": fmt(self.costs),
+            "simulated_fees_usd": fmt(self.costs),
             "halted": self.halted,
             "pending_buy": fmt(self.pending_buy) if self.pending_buy is not None else None,
             "previous_hash": self.previous_hash,
@@ -180,7 +182,8 @@ class ShadowRunner:
             "initial_usd": fmt(self.cfg.initial_usd),
             "final_nav_usd": fmt(nav),
             "simulated_pnl_usd": fmt(nav - self.cfg.initial_usd),
-            "simulated_costs_usd": fmt(self.costs),
+            "simulated_fees_usd": fmt(self.costs),
+            "slippage_model": "NOT_MODELED",
             "paper_fills": self.trades,
             "drawdown_definition": "initial_equity_fixed_3pct",
             "pending_maker_buy": fmt(self.pending_buy) if self.pending_buy is not None else None,
@@ -271,7 +274,6 @@ def main() -> None:
         # freshness in replay cannot prove freshness of a live feed.
         stream = ((item, parse_timestamp(item["timestamp"])) for item in snapshots)
     else:
-        item = public_snapshot()
         def public_stream():
             for index in range(args.samples):
                 if index:
