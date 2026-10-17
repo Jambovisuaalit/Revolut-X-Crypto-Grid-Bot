@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import urlencode
+from uuid import UUID
 
 import requests
 from cryptography.hazmat.primitives import serialization
@@ -190,17 +191,33 @@ class RevolutXClient:
         return payload
 
     @staticmethod
-    def _placement_result(payload: Any, client_order_id: str) -> dict[str, Any]:
+    def _placement_result(payload: Any, client_order_id: str, *, replacement: bool = False) -> dict[str, Any]:
+        """Validate immutable acknowledgement fields, never interpret ambiguity as rejection.
+
+        PUT docs describe data as an object but show a list in their example.
+        Only for PUT, accept a singleton array as well; reject empty/multi.
+        """
+        if not isinstance(payload, dict):
+            raise UncertainMutationError("unexpected mutation acknowledgement")
+        data = payload.get("data")
+        if replacement and isinstance(data, list):
+            if len(data) != 1:
+                raise UncertainMutationError("replacement acknowledgement is not singular")
+            data = data[0]
+        if not isinstance(data, dict):
+            raise UncertainMutationError("unexpected mutation acknowledgement data")
+        venue_id = data.get("venue_order_id")
+        returned_client_id = data.get("client_order_id")
+        if not isinstance(venue_id, str) or not isinstance(returned_client_id, str):
+            raise UncertainMutationError("missing order identity in acknowledgement")
         try:
-            data = RevolutXClient._data_object(payload, "order acknowledgement")
-        except ApiError as exc:
-            raise UncertainMutationError("unexpected mutation acknowledgement") from exc
-        if (
-            not isinstance(data.get("venue_order_id"), str)
-            or not data["venue_order_id"]
-            or data.get("client_order_id") != client_order_id
-            or data.get("state") not in {"pending_new", "new", "partially_filled", "filled", "cancelled", "rejected"}
-        ):
+            if str(UUID(venue_id)) != venue_id.lower() or str(UUID(returned_client_id)) != returned_client_id.lower():
+                raise ValueError("noncanonical identity")
+        except (ValueError, AttributeError) as exc:
+            raise UncertainMutationError("invalid UUID in acknowledgement") from exc
+        if returned_client_id != client_order_id or data.get("state") not in {
+            "pending_new", "new", "partially_filled", "filled", "cancelled", "rejected"
+        }:
             raise UncertainMutationError("incomplete/mismatched mutation acknowledgement")
         return data
 
@@ -210,7 +227,7 @@ class RevolutXClient:
 
     def replace_order(self, venue_order_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         result = self.request("PUT", f"/1.0/orders/{venue_order_id}", body=payload, mutation=True)
-        return self._placement_result(result, str(payload["client_order_id"]))
+        return self._placement_result(result, str(payload["client_order_id"]), replacement=True)
 
     def cancel_all_orders(self) -> Any:
         return self.request("DELETE", "/1.0/orders", mutation=True)
