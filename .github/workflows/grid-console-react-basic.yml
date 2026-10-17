@@ -1,0 +1,39 @@
+name: Grid Console React Basic Setup
+on:
+  push:
+    branches: [feat/grid-console-react-basic-setup-v1]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  frontend:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm install --no-audit --no-fund
+      - name: Typecheck
+        working-directory: frontend
+        run: npm run typecheck
+      - name: Contract tests
+        working-directory: frontend
+        run: npm test
+      - name: Static build
+        working-directory: frontend
+        run: npm run build
+      - name: Confirm no trading core modifications
+        shell: bash
+        run: |
+          git diff --exit-code HEAD^ HEAD -- bot_main.py grid_executor.py supervisor_runtime.py account_readonly.py
