@@ -54,6 +54,14 @@ class Response:
         self.content = raw if raw is not None else json.dumps(data).encode("utf-8")
         self.status_code = status
         self.headers = headers or {}
+        self.closed = False
+
+    def iter_content(self, chunk_size=65536):
+        for offset in range(0, len(self.content), chunk_size):
+            yield self.content[offset:offset+chunk_size]
+
+    def close(self):
+        self.closed = True
 
 
 class Transport:
@@ -101,6 +109,7 @@ class AccountReaderTests(unittest.TestCase):
             self.assertIs(kwargs["allow_redirects"],False)
             self.assertEqual(kwargs["timeout"],10)
             self.assertEqual(kwargs["params"],None)
+            self.assertTrue(kwargs["stream"])
 
     def test_02_exact_ed25519_signature_for_encoded_cursor(self):
         t = Transport([Response(page([order()], cursor="ab+/==")),
