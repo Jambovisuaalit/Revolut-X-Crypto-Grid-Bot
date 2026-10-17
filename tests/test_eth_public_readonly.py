@@ -210,3 +210,32 @@ class ReadOnlyPublicAdapterTests(unittest.TestCase):
             state, decision = transition(state, event, self.cfg, rule)
         self.assertEqual(state["synthetic_fills"], 0)
         self.assertIn("LOT_1_CAP_OR_PAIR_RULE", decision["reasons"])
+
+    def test_public_11_archived_real_shape_feeds_only_offline_shadow(self):
+        import tempfile
+        from scripts.inspect_eth_eur_public_capture import inspect_capture
+        fake = Session()
+        ticks = iter(BASE+100+i*5000 for i in range(3))
+        captured, report = capture_once(
+            cfg=self.cfg, samples=3, client=self.client(fake),
+            clock=lambda: next(ticks), pause=lambda _: None)
+        self.assertEqual(report["status"], "READY_FOR_OFFLINE_INSPECTION")
+        with tempfile.TemporaryDirectory() as folder:
+            replay = inspect_capture(captured, self.cfg, Path(folder)/"replay.sqlite")
+            self.assertEqual(replay["observations"], 3)
+            self.assertEqual(replay["audit_integrity"], "PASS")
+            self.assertEqual(replay["real_mutation_requests"], 0)
+            self.assertEqual(replay["adapter_type"], "OFFLINE_REPLAY_OF_SAVED_PUBLIC_GET")
+            self.assertEqual(replay["acceptance"], "NO_GO_INSUFFICIENT_REAL_SAMPLE")
+            self.assertEqual(replay["validation_30d"], "NOT_RUN")
+
+    def test_public_12_tampered_archive_never_replayed(self):
+        import tempfile
+        from scripts.inspect_eth_eur_public_capture import inspect_capture
+        captured, _ = capture_once(
+            cfg=self.cfg, samples=1, client=self.client(Session()),
+            clock=lambda: BASE+100, pause=lambda _: None)
+        captured["events"][0]["bids"][0][0] = "1"
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaisesRegex(ValueError, "HASH_MISMATCH"):
+                inspect_capture(captured, self.cfg, Path(folder)/"replay.sqlite")
