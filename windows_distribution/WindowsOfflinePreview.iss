@@ -1,10 +1,10 @@
 ; Grid Console Windows OFFLINE preview — UNSIGNED DEVELOPMENT INSTALLER.
 ; Signing deliberately excluded. No live/account executables.
 #ifndef BuildDist
-  #define BuildDist "dist\GridConsoleOfflinePreview"
+  #define BuildDist "..\dist\GridConsoleOfflinePreview"
 #endif
 #ifndef ReleaseOutput
-  #define ReleaseOutput "installer-dist"
+  #define ReleaseOutput "..\installer-dist"
 #endif
 #ifndef BuildVersion
   #define BuildVersion "0.1.0"
@@ -28,10 +28,10 @@ ArchitecturesInstallIn64BitMode=x64compatible
 DisableProgramGroupPage=no
 UninstallDisplayIcon={app}\GridConsoleOfflinePreview.exe
 SetupLogging=yes
-LicenseFile=windows_distribution\UNSIGNED_DEV_NOTICE.txt
+LicenseFile=UNSIGNED_DEV_NOTICE.txt
 [Files]
 Source: "{#BuildDist}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "windows_distribution\UNSIGNED_DEV_NOTICE.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "UNSIGNED_DEV_NOTICE.txt"; DestDir: "{app}"; Flags: ignoreversion
 [Icons]
 Name: "{autoprograms}\Grid Console Offline Preview — DEV"; Filename: "{app}\GridConsoleOfflinePreview.exe"; Comment: "No account connection or trading"
 [Run]
