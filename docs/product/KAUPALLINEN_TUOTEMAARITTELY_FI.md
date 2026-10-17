@@ -138,6 +138,21 @@ automaattikauppaa hankitaan tarvittava kirjallinen oikeudellinen arvio
 ja tarkistetaan palvelu- ja API-sopimusehdot; tässä ei väitetä
 ohjelmistomallin olevan varmasti toimiluvasta vapaa.
 
+### Lähdekoodin levitys- ja lisensointipäätös
+
+GitHub-repositorio on tällä hetkellä **julkinen**. Julkinen näkyvyys
+ei itsessään tarkoita avointa käyttöoikeutta tai myönnettyä
+kaupallista lisenssiä, mutta se tekee lähdekoodin luettavaksi.
+Ennen käyttöoikeuksien myyntiä on päätettävä joko:
+
+1. erillinen yksityinen ja lisensoitu jakelukanava, tai
+2. avoimeen lähdekoodiin perustuva maksullinen asennus-, ylläpito-
+   ja tukipalvelu.
+
+Pelkkä koodin pakkaaminen Windowsin .exe-tiedostoksi ei itsessään
+suojaa liiketoimintamallia, eikä lisenssivalvonta saa heikentää
+riskin pysäytys- ja palautumistoimintoja.
+
 ## 10. Päätöksenteon ja julkaisun portit
 
 **A: DEMO** — UX-asennus ja tietoturvan read-only-testit vihreät,
