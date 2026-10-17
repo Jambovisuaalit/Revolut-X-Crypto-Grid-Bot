@@ -39,6 +39,8 @@ class ShadowGridV1Tests(unittest.TestCase):
         self.assertEqual(self.cfg["max_cost_basis_eur"], D("400"))
         self.assertEqual(self.cfg["hard_drawdown_eur"], D("30"))
         self.assertEqual(self.cfg.sha256, Config.load(CONFIG).sha256)
+        # Cross-platform Git checkout may use CRLF: hashes MUST remain identical.
+        self.assertEqual(self.cfg.sha256, "4f4d337ed15e5b88e1e979015acfab60c2a34fa87f177a2be97b2064d7de8c33")
         with tempfile.TemporaryDirectory() as work:
             p = Path(work) / "unsafe.toml"
             p.write_text(Path(CONFIG).read_text().replace('mode = "shadow"', 'mode = "live"'))
