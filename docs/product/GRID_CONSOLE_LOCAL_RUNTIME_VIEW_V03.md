@@ -48,7 +48,9 @@ varmennusmerkintänä, mutta sekään **ei** ole juuri sillä hetkellä
 tehty pörssin order book -täsmäytys.
 
 **Tapahtumahistoria:** paikalliset tilaukset ja
-fill-kirjaukset. Epävarmat tilaukset korostetaan ja koko
+fill-kirjaukset. Tilauksen yhteydessä näkyy **nykyinen paikallinen tila**
+ja alkuperäinen luontiaika, **ei** tilamuutoksen tapahtuma-aika.
+Fillissä näkyy kirjausaika. Epävarmat tilaukset korostetaan ja koko
 näkymän valvojan tilaksi asetetaan `BLOCKED`.
 
 **Tärkeä rajaus:** nykyisessä ytimessä ei ole erillistä
