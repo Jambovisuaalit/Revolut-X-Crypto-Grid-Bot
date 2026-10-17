@@ -71,11 +71,11 @@ class FakeClient:
 
     def replace_order(self, venue_order_id, payload):
         self.replaced.append(payload)
+        parent_row = next(x for x in self.active if x["id"] == venue_order_id)
         self.active = [x for x in self.active if x["id"] != venue_order_id]
         new_id = uid()
-        lim = payload["order_configuration"]["limit"]
-        self.active.append(venue(payload["client_order_id"], new_id, side=payload["side"],
-                                 price=lim["price"], quantity=lim["base_size"],
+        self.active.append(venue(payload["client_order_id"], new_id, side=parent_row["side"],
+                                 price=payload["price"], quantity=payload["base_size"],
                                  parent=venue_order_id))
         if self.lost_put_reply:
             raise UncertainMutationError("simulated lost PUT acknowledgement")
@@ -185,6 +185,8 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(a["status"], "replaced")
         self.assertEqual(b["status"], "new")
         self.assertEqual(len(self.client.replaced), 1)
+        self.assertEqual(set(self.client.replaced[0]), {"client_order_id", "base_size", "price", "execution_instructions"})
+        self.assertNotIn("order_configuration", self.client.replaced[0])
 
     def test_lost_put_without_child_proof_stays_blocked(self):
         result = self.create()
