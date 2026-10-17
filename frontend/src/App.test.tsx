@@ -67,7 +67,7 @@ describe("React local-only risk display", () => {
     mockRuntime(localRuntime, false);
     render(<App />);
     expect(await screen.findByText("Luku epäonnistui")).toBeTruthy();
-    expect(screen.getByText("UNKNOWN")).toBeTruthy();
+    expect(screen.getAllByText("UNKNOWN").length).toBeGreaterThanOrEqual(2);
   });
 
   it("shows no-data as unverified rather than a live account", async () => {
