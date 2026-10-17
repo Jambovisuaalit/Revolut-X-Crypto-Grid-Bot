@@ -59,6 +59,8 @@ class CancellationGateTests(unittest.TestCase):
             self.assertFalse(supervisor.check_drawdown(Decimal("10000")))
             self.assertTrue(supervisor.check_drawdown(Decimal("9690")))
             self.assertEqual(supervisor._metadata("cancellation_verification_status"), expected)
+            self.assertTrue(supervisor.check_drawdown(Decimal("9690")))
+            self.assertEqual(supervisor._metadata("cancellation_verification_status"), expected)
             self.assertEqual(supervisor._metadata("kill_switch_triggered"), "true")
             self.assert_blocked(exe)
             self.assertEqual(venue.cancel_calls, 1)
