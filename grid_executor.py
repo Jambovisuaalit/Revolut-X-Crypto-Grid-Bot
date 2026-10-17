@@ -158,11 +158,19 @@ class GridExecutor:
         if required + self._reserved(currency) > free:
             raise PrecisionError("aggregate reservation exceeds free balance")
 
+    def _assert_not_halted(self) -> None:
+        row = self.connection.execute(
+            "SELECT value FROM bot_metadata WHERE key='kill_switch_triggered'"
+        ).fetchone()
+        if row is not None and row["value"] == "true":
+            raise ReconciliationError("persistent kill switch is triggered; trading halted")
+
     def create_order(
         self, *, client_order_id: str, symbol: str, side: str,
         price: Decimal, quantity: Decimal, free_balances: Mapping[str, Decimal]
     ) -> Mapping[str, Any]:
         with self._lock:
+            self._assert_not_halted()
             if not self.reconciled:
                 raise ReconciliationError("startup/recovery reconciliation is required")
             order = self._validated_order(client_order_id, symbol, side, price, quantity)
@@ -208,6 +216,7 @@ class GridExecutor:
         free_balances: Mapping[str, Decimal], client_order_id: str | None = None
     ) -> Mapping[str, Any]:
         with self._lock:
+            self._assert_not_halted()
             if not self.reconciled:
                 raise ReconciliationError("reconciliation is required")
             parent = self.connection.execute(
