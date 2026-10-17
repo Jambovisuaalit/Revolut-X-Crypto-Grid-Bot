@@ -56,6 +56,23 @@ class GridBotSupervisor:
                 equity += amount * quote_prices[pair]
         return equity
 
+    def verify_cancellation(self) -> bool:
+        """Read-only verification of the venue's active orders after a halt."""
+        if self._metadata("kill_switch_triggered") != "true":
+            raise RuntimeError("verification requires a persisted kill switch")
+        try:
+            active = self.executor.client.get_open_orders()
+            if not isinstance(active, list) or active:
+                raise ValueError("active orders remain or snapshot is invalid")
+        except Exception:
+            with self.executor._write_transaction():
+                self._set_metadata("cancellation_verification_status", "CANCELLATION_UNVERIFIED")
+            LOGGER.exception("cancellation unverified; trading remains halted")
+            return False
+        with self.executor._write_transaction():
+            self._set_metadata("cancellation_verification_status", "VERIFIED_NO_ACTIVE_ORDERS")
+        return True
+
     def check_drawdown(self, current_equity: Decimal) -> bool:
         """Atomically persist baseline and sticky halt across SQLite processes."""
         if not isinstance(current_equity, Decimal) or not current_equity.is_finite() or current_equity < 0:
@@ -74,11 +91,17 @@ class GridBotSupervisor:
             already_halted = self._metadata("kill_switch_triggered") == "true"
             if breached:
                 self._set_metadata("kill_switch_triggered", "true")
+                self._set_metadata("cancellation_verification_status", "CANCELLATION_UNVERIFIED")
             halted = breached or already_halted
         self.kill_switch_triggered = halted
         if halted:
             if breached and not already_halted and self.executor.live_trading:
-                self.executor.client.cancel_all_orders()
+                try:
+                    self.executor.client.cancel_all_orders()
+                except Exception:
+                    LOGGER.exception("cancel-all uncertain; kill switch remains persisted")
+                    raise
+                self.verify_cancellation()
             LOGGER.critical("persistent drawdown kill-switch triggered; execution halted")
         return halted
 
