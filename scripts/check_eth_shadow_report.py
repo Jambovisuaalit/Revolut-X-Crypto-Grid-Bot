@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from decimal import Decimal
 
 
 def main() -> None:
@@ -25,7 +26,7 @@ def main() -> None:
     for key, value in expected.items():
         if report.get(key) != value:
             raise SystemExit(f"FAIL: {key} is {report.get(key)!r}; expected {value!r}")
-    if float(report["simulated_total_pnl_eur"]) <= 0 or report["hard_stop_triggered"]:
+    if Decimal(report["simulated_total_pnl_eur"]) <= 0 or report["hard_stop_triggered"]:
         raise SystemExit("FAIL: invalid deterministic fixture output")
     print("PASS: deterministic synthetic replay, audit, zero exchange writes; economic approval BLOCKED")
 
