@@ -1,8 +1,7 @@
-"""Persistent, idempotent grid-order execution and reconciliation."""
+"""Persistent post-only order state machine; ambiguous writes require reconciliation."""
 
 from __future__ import annotations
 
-import json
 import sqlite3
 import threading
 import uuid
@@ -16,13 +15,11 @@ from revolut_x_client import ApiError, RevolutXClient
 
 
 class ReconciliationError(RuntimeError):
-    """Raised when local state and exchange state cannot safely be reconciled."""
+    """Unverified venue/local state; execution must remain blocked."""
 
 
 @dataclass(frozen=True, slots=True)
 class OrderRequest:
-    """Normalized limit order request."""
-
     client_order_id: str
     symbol: str
     side: str
@@ -31,10 +28,11 @@ class OrderRequest:
 
 
 class GridExecutor:
-    """Coordinates pair validation, reservations, lineage, and API mutations."""
+    """Write intent before a mutation, never replay it, adopt only verified venue state."""
 
-    ACTIVE_STATUSES = frozenset({"pending_new", "new", "partially_filled"})
-    KNOWN_STATUSES = ACTIVE_STATUSES | frozenset({"filled", "cancelled", "rejected", "replaced"})
+    ACTIVE_STATUSES = frozenset({"pending_new", "pending_replace", "new", "partially_filled", "replace_uncertain"})
+    TERMINAL_STATUSES = frozenset({"filled", "cancelled", "rejected", "replaced"})
+    KNOWN_STATUSES = ACTIVE_STATUSES | TERMINAL_STATUSES
 
     def __init__(
         self,
@@ -44,9 +42,8 @@ class GridExecutor:
         database_path: str = "bot_state.db",
         live_trading: bool = False,
     ) -> None:
-        """Open persistent state; live mutations are disabled unless opted in."""
         self.client = client
-        self.pair_rules = {SymbolNormalizer.to_display_symbol(key): value for key, value in pair_rules.items()}
+        self.pair_rules = {SymbolNormalizer.to_display_symbol(k): v for k, v in pair_rules.items()}
         self.live_trading = live_trading
         self._lock = threading.RLock()
         self.connection = sqlite3.connect(Path(database_path), isolation_level=None, check_same_thread=False)
@@ -58,6 +55,7 @@ class GridExecutor:
         self.connection.executescript(
             """
             PRAGMA journal_mode=WAL;
+            PRAGMA synchronous=FULL;
             PRAGMA foreign_keys=ON;
             CREATE TABLE IF NOT EXISTS order_lineage (
                 client_order_id TEXT PRIMARY KEY,
@@ -75,19 +73,16 @@ class GridExecutor:
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
-            CREATE TABLE IF NOT EXISTS fills (
+            CREATE TABLE IF NOT EXISTS bot_metadata (
+                key TEXT PRIMARY KEY, value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS fills_wire (
                 fill_id TEXT PRIMARY KEY,
                 venue_order_id TEXT NOT NULL,
                 quantity TEXT NOT NULL,
                 price TEXT NOT NULL,
-                fee TEXT NOT NULL,
-                fee_currency TEXT NOT NULL,
-                is_maker INTEGER NOT NULL CHECK(is_maker IN (0, 1)),
+                fee TEXT NULL, fee_currency TEXT NULL, is_maker INTEGER NULL,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE TABLE IF NOT EXISTS bot_metadata (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
             );
             """
         )
@@ -102,7 +97,6 @@ class GridExecutor:
                 "limit": {
                     "base_size": decimal_text(order.quantity),
                     "price": decimal_text(order.price),
-                    "time_in_force": "gtc",
                     "execution_instructions": ["post_only"],
                 }
             },
@@ -111,22 +105,29 @@ class GridExecutor:
     def _validated_order(
         self, client_order_id: str, symbol: str, side: str, price: Decimal, quantity: Decimal
     ) -> OrderRequest:
+        try:
+            if str(uuid.UUID(client_order_id)) != client_order_id.lower():
+                raise ValueError("noncanonical UUID")
+        except (ValueError, AttributeError) as exc:
+            raise PrecisionError("client_order_id must be a canonical UUID") from exc
         normalized_symbol = SymbolNormalizer.to_display_symbol(symbol)
-        normalized_side = side.lower()
-        if normalized_side not in {"buy", "sell"}:
+        side = side.lower()
+        if side not in {"buy", "sell"}:
             raise PrecisionError("side must be buy or sell")
         rules = self.pair_rules.get(normalized_symbol)
         if rules is None:
-            raise PrecisionError(f"no pair rules loaded for {normalized_symbol}")
+            raise PrecisionError(f"pair rules missing: {normalized_symbol}")
+        if not isinstance(price, Decimal) or not isinstance(quantity, Decimal):
+            raise PrecisionError("price and quantity must be Decimal")
         rounded_price, rounded_quantity = rules.normalize(price, quantity)
-        return OrderRequest(client_order_id, normalized_symbol, normalized_side, rounded_price, rounded_quantity)
+        return OrderRequest(client_order_id, normalized_symbol, side, rounded_price, rounded_quantity)
 
     def _reserved(self, currency: str) -> Decimal:
         total = Decimal("0")
-        rows = self.connection.execute(
-            "SELECT symbol, side, price, leaves_quantity FROM order_lineage WHERE status IN ('pending_new','new','partially_filled')"
-        )
-        for row in rows:
+        for row in self.connection.execute(
+            "SELECT symbol,side,price,leaves_quantity FROM order_lineage "
+            "WHERE status IN ('pending_new','pending_replace','new','partially_filled','replace_uncertain')"
+        ):
             base, quote = str(row["symbol"]).split("/", 1)
             leaves = decimal_from_api(row["leaves_quantity"], "leaves_quantity")
             if row["side"] == "buy" and quote == currency:
@@ -139,195 +140,280 @@ class GridExecutor:
         base, quote = order.symbol.split("/", 1)
         currency = quote if order.side == "buy" else base
         required = order.price * order.quantity if order.side == "buy" else order.quantity
-        if currency not in free_balances:
-            raise PrecisionError(f"missing free balance for {currency}")
-        free = free_balances[currency]
-        if free < 0:
-            raise PrecisionError("free balance cannot be negative")
+        free = free_balances.get(currency)
+        if not isinstance(free, Decimal) or not free.is_finite() or free < 0:
+            raise PrecisionError(f"invalid/missing free balance: {currency}")
         if required > free * Decimal("0.05"):
-            raise PrecisionError("single order exceeds 5% of available free balance")
+            raise PrecisionError("single order exceeds 5% of free balance")
         if required + self._reserved(currency) > free:
-            raise PrecisionError("aggregate local reservation exceeds free balance")
-
-    @staticmethod
-    def _venue_id(response: Any) -> str:
-        if not isinstance(response, Mapping):
-            raise ApiError("order response must be an object")
-        venue_id = response.get("order_id", response.get("venue_order_id"))
-        if not isinstance(venue_id, str) or not venue_id:
-            raise ApiError("order response is missing venue order id")
-        return venue_id
+            raise PrecisionError("aggregate reservation exceeds free balance")
 
     def create_order(
-        self,
-        *,
-        client_order_id: str,
-        symbol: str,
-        side: str,
-        price: Decimal,
-        quantity: Decimal,
-        free_balances: Mapping[str, Decimal],
+        self, *, client_order_id: str, symbol: str, side: str,
+        price: Decimal, quantity: Decimal, free_balances: Mapping[str, Decimal]
     ) -> Mapping[str, Any]:
-        """Persist then place one idempotent post-only limit order."""
-        if not self.reconciled:
-            raise ReconciliationError("startup reconciliation has not completed")
-        order = self._validated_order(client_order_id, symbol, side, price, quantity)
-        payload = self._payload(order)
         with self._lock:
+            if not self.reconciled:
+                raise ReconciliationError("startup/recovery reconciliation is required")
+            order = self._validated_order(client_order_id, symbol, side, price, quantity)
+            existing = self.connection.execute(
+                "SELECT * FROM order_lineage WHERE client_order_id=?", (client_order_id,)
+            ).fetchone()
+            if existing is not None:
+                if (
+                    existing["symbol"] != order.symbol or existing["side"] != order.side
+                    or decimal_from_api(existing["price"], "price") != order.price
+                    or decimal_from_api(existing["quantity"], "quantity") != order.quantity
+                ):
+                    raise ReconciliationError("client order id reused for a different instruction")
+                if existing["status"] in {"pending_new", "pending_replace", "replace_uncertain"}:
+                    raise ReconciliationError("order outcome remains uncertain; never replay")
+                return {"client_order_id": client_order_id, "venue_order_id": existing["venue_order_id"],
+                        "status": existing["status"], "idempotent": True}
+            self._assert_funding(order, free_balances)
+            payload = self._payload(order)
             if not self.live_trading:
-                self._assert_funding(order, free_balances)
                 return {"dry_run": True, "payload": payload}
-            self.connection.execute("BEGIN IMMEDIATE")
-            try:
-                existing = self.connection.execute(
-                    "SELECT venue_order_id, status FROM order_lineage WHERE client_order_id=?", (client_order_id,)
-                ).fetchone()
-                if existing is not None:
-                    self.connection.execute("COMMIT")
-                    return {"client_order_id": client_order_id, "venue_order_id": existing[0], "status": existing[1]}
-                self._assert_funding(order, free_balances)
-                self.connection.execute(
-                    """INSERT INTO order_lineage
-                       (client_order_id, root_client_order_id, symbol, side, price, quantity, leaves_quantity, status)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_new')""",
-                    (client_order_id, client_order_id, order.symbol, order.side, decimal_text(order.price),
-                     decimal_text(order.quantity), decimal_text(order.quantity)),
-                )
-                self.connection.execute("COMMIT")
-            except Exception:
-                self.connection.execute("ROLLBACK")
-                raise
-            response = self.client.place_order(payload)
-            venue_id = self._venue_id(response)
             self.connection.execute(
-                "UPDATE order_lineage SET venue_order_id=?, status='new', updated_at=CURRENT_TIMESTAMP WHERE client_order_id=?",
-                (venue_id, client_order_id),
+                "INSERT INTO order_lineage "
+                "(client_order_id,root_client_order_id,symbol,side,price,quantity,leaves_quantity,status) "
+                "VALUES(?,?,?,?,?,?,?,'pending_new')",
+                (client_order_id, client_order_id, order.symbol, order.side,
+                 decimal_text(order.price), decimal_text(order.quantity), decimal_text(order.quantity)),
             )
-            return response
+            try:
+                result = self.client.place_order(payload)
+                self.connection.execute(
+                    "UPDATE order_lineage SET venue_order_id=?,status=?,updated_at=CURRENT_TIMESTAMP "
+                    "WHERE client_order_id=?",
+                    (result["venue_order_id"], result["state"], client_order_id),
+                )
+                return result
+            except Exception:
+                self.reconciled = False
+                raise
 
     def replace_order(
-        self,
-        venue_order_id: str,
-        *,
-        new_price: Decimal,
-        free_balances: Mapping[str, Decimal],
-        client_order_id: str | None = None,
+        self, venue_order_id: str, *, new_price: Decimal,
+        free_balances: Mapping[str, Decimal], client_order_id: str | None = None
     ) -> Mapping[str, Any]:
-        """Replace using remaining quantity and append a lineage generation."""
-        if not self.reconciled:
-            raise ReconciliationError("startup reconciliation has not completed")
         with self._lock:
+            if not self.reconciled:
+                raise ReconciliationError("reconciliation is required")
             parent = self.connection.execute(
                 "SELECT * FROM order_lineage WHERE venue_order_id=?", (venue_order_id,)
             ).fetchone()
             if parent is None or parent["status"] not in {"new", "partially_filled"}:
-                raise ReconciliationError("only a known active order can be replaced")
+                raise ReconciliationError("only known active orders may be replaced")
             child_id = client_order_id or str(uuid.uuid4())
-            leaves = decimal_from_api(parent["leaves_quantity"], "leaves_quantity")
-            order = self._validated_order(child_id, parent["symbol"], parent["side"], new_price, leaves)
+            order = self._validated_order(
+                child_id, parent["symbol"], parent["side"], new_price,
+                decimal_from_api(parent["leaves_quantity"], "leaves_quantity")
+            )
             payload = self._payload(order)
+            existing = self.connection.execute(
+                "SELECT 1 FROM order_lineage WHERE client_order_id=?", (child_id,)
+            ).fetchone()
+            if existing:
+                raise ReconciliationError("replacement client id already used; never replay")
             if not self.live_trading:
                 return {"dry_run": True, "payload": payload}
             self.connection.execute("BEGIN IMMEDIATE")
             try:
-                if self.connection.execute(
-                    "SELECT 1 FROM order_lineage WHERE client_order_id=?", (child_id,)
-                ).fetchone():
-                    self.connection.execute("COMMIT")
-                    return {"client_order_id": child_id, "status": "already_recorded"}
-                # Exclude the parent reservation because PUT replaces rather than adds to it.
-                self.connection.execute("UPDATE order_lineage SET status='replaced' WHERE venue_order_id=?", (venue_order_id,))
+                self.connection.execute(
+                    "UPDATE order_lineage SET status='replace_uncertain' WHERE venue_order_id=?",
+                    (venue_order_id,),
+                )
+                # Replacement is atomic at the venue: exclude the parent reservation here.
+                self.connection.execute(
+                    "INSERT INTO order_lineage "
+                    "(client_order_id,parent_venue_order_id,root_client_order_id,symbol,side,price,"
+                    "quantity,leaves_quantity,status,version) VALUES(?,?,?,?,?,?,?,?,'pending_replace',?)",
+                    (child_id, venue_order_id, parent["root_client_order_id"], order.symbol,
+                     order.side, decimal_text(order.price), decimal_text(order.quantity),
+                     decimal_text(order.quantity), parent["version"] + 1),
+                )
+                # Temporarily exclude parent from funding computation, without losing its persisted identity.
+                self.connection.execute(
+                    "UPDATE order_lineage SET status='replaced' WHERE venue_order_id=?",
+                    (venue_order_id,),
+                )
                 self._assert_funding(order, free_balances)
                 self.connection.execute(
-                    """INSERT INTO order_lineage
-                       (client_order_id,parent_venue_order_id,root_client_order_id,symbol,side,price,quantity,
-                        filled_quantity,leaves_quantity,status,version)
-                       VALUES (?,?,?,?,?,?,?,'0',?,'pending_new',?)""",
-                    (child_id, venue_order_id, parent["root_client_order_id"], order.symbol, order.side,
-                     decimal_text(order.price), decimal_text(order.quantity), decimal_text(order.quantity), parent["version"] + 1),
+                    "UPDATE order_lineage SET status='replace_uncertain' WHERE venue_order_id=?",
+                    (venue_order_id,),
                 )
                 self.connection.execute("COMMIT")
             except Exception:
                 self.connection.execute("ROLLBACK")
                 raise
             try:
-                response = self.client.replace_order(venue_order_id, payload)
-                new_venue_id = self._venue_id(response)
+                result = self.client.replace_order(venue_order_id, payload)
+                if result["venue_order_id"] == venue_order_id:
+                    raise ReconciliationError("replacement response reused parent venue id")
+                self.connection.execute("BEGIN IMMEDIATE")
+                self.connection.execute(
+                    "UPDATE order_lineage SET status='replaced' WHERE venue_order_id=?", (venue_order_id,)
+                )
+                self.connection.execute(
+                    "UPDATE order_lineage SET venue_order_id=?,status=? WHERE client_order_id=?",
+                    (result["venue_order_id"], result["state"], child_id),
+                )
+                self.connection.execute("COMMIT")
+                return result
             except Exception:
-                # The parent remains active locally unless an acknowledgement proves replacement.
-                self.connection.execute("UPDATE order_lineage SET status=? WHERE venue_order_id=?", (parent["status"], venue_order_id))
+                # Do not revert to "new": parent and child may BOTH be present at the venue.
+                if self.connection.in_transaction:
+                    self.connection.execute("ROLLBACK")
+                self.reconciled = False
                 raise
-            self.connection.execute(
-                "UPDATE order_lineage SET venue_order_id=?, status='new', updated_at=CURRENT_TIMESTAMP WHERE client_order_id=?",
-                (new_venue_id, child_id),
-            )
-            return response
+
+    @staticmethod
+    def _order_identity(row: sqlite3.Row, item: Mapping[str, Any]) -> None:
+        """Require strict identity, full original quantity and maker-only semantics."""
+        try:
+            if not (
+                item.get("client_order_id") == row["client_order_id"]
+                and SymbolNormalizer.to_display_symbol(str(item["symbol"])) == row["symbol"]
+                and str(item["side"]).lower() == row["side"]
+                and str(item["type"]).lower() == "limit"
+                and "post_only" in item["execution_instructions"]
+                and decimal_from_api(item["price"], "venue price") == decimal_from_api(row["price"], "local price")
+                and decimal_from_api(item["quantity"], "venue quantity") ==
+                    decimal_from_api(row["quantity"], "local quantity")
+            ):
+                raise ReconciliationError("venue order does not match persisted order intent")
+        except (KeyError, TypeError, PrecisionError) as exc:
+            raise ReconciliationError("venue order has missing/invalid identity fields") from exc
+
+    @staticmethod
+    def _order_status(item: Mapping[str, Any]) -> tuple[str, Decimal, Decimal]:
+        status = item.get("status")
+        if status not in GridExecutor.KNOWN_STATUSES:
+            raise ReconciliationError(f"unknown venue status: {status}")
+        quantity = decimal_from_api(item.get("quantity"), "quantity")
+        filled = decimal_from_api(item.get("filled_quantity"), "filled_quantity")
+        leaves = decimal_from_api(item.get("leaves_quantity"), "leaves_quantity")
+        if min(quantity, filled, leaves) < 0 or filled + leaves != quantity:
+            raise ReconciliationError("invalid venue filled/leaves accounting")
+        return status, filled, leaves
 
     def reconcile_open_orders(self) -> None:
-        """Require an exact match between venue open orders and non-pending local orders."""
-        if self.connection.execute("SELECT 1 FROM order_lineage WHERE status='pending_new' LIMIT 1").fetchone():
-            raise ReconciliationError("an uncertain pending mutation requires manual reconciliation")
-        payload = self.client.get_open_orders()
-        if not isinstance(payload, Sequence) or isinstance(payload, (str, bytes)):
-            raise ReconciliationError("open orders response must be a list")
-        venue: dict[str, Mapping[str, Any]] = {}
-        for item in payload:
-            if not isinstance(item, Mapping):
-                raise ReconciliationError("malformed open order")
-            venue_id = item.get("order_id", item.get("venue_order_id"))
-            if not isinstance(venue_id, str) or not venue_id:
-                raise ReconciliationError("open order has no id")
-            venue[venue_id] = item
-        local = {
-            row["venue_order_id"]: row
-            for row in self.connection.execute(
-                "SELECT * FROM order_lineage WHERE status IN ('new','partially_filled')"
-            )
-        }
-        if set(venue) != set(local):
-            raise ReconciliationError("venue/local open-order mismatch")
-        for venue_id, item in venue.items():
-            status = str(item.get("status", "")).lower()
-            if status not in {"new", "open", "partially_filled"}:
-                raise ReconciliationError(f"unknown open order status: {status}")
-            filled = decimal_from_api(item.get("filled_quantity", local[venue_id]["filled_quantity"]), "filled_quantity")
-            quantity = decimal_from_api(local[venue_id]["quantity"], "quantity")
-            leaves = quantity - filled
-            if leaves < 0:
-                raise ReconciliationError("filled quantity exceeds original quantity")
-            local_status = "partially_filled" if filled > 0 else "new"
-            self.connection.execute(
-                "UPDATE order_lineage SET filled_quantity=?, leaves_quantity=?, status=?, updated_at=CURRENT_TIMESTAMP WHERE venue_order_id=?",
-                (decimal_text(filled), decimal_text(leaves), local_status, venue_id),
-            )
-            if filled > 0:
-                self.reconcile_fills(venue_id)
-        self.reconciled = True
+        """Adopt confirmed pending writes, or keep trading blocked if outcome cannot be proved.
+
+        Recent history is only a lookup source. Missing entries NEVER authorize another POST/PUT.
+        """
+        with self._lock:
+            self.reconciled = False
+            active = self.client.get_open_orders()
+            rows = list(self.connection.execute("SELECT * FROM order_lineage"))
+            local_by_id = {row["venue_order_id"]: row for row in rows if row["venue_order_id"]}
+            pending = [row for row in rows if row["status"] in {"pending_new", "pending_replace", "replace_uncertain"}]
+            active_by_id = {item["id"]: item for item in active}
+            if len(active_by_id) != len(active):
+                raise ReconciliationError("duplicate active venue identifiers")
+            need_history = bool(pending or any(
+                row["status"] in {"new", "partially_filled"} and row["venue_order_id"] not in active_by_id
+                for row in rows
+            ))
+            historical = self.client.get_historical_orders() if need_history else []
+            history_by_id = {item["id"]: item for item in historical}
+            by_client: dict[str, list[Mapping[str, Any]]] = {}
+            for item in active + historical:
+                key = item.get("client_order_id")
+                if isinstance(key, str) and key:
+                    by_client.setdefault(key, []).append(item)
+            self.connection.execute("BEGIN IMMEDIATE")
+            try:
+                for row in pending:
+                    if row["status"] == "replace_uncertain":
+                        continue  # resolved only when its pending child is confirmed
+                    candidates = by_client.get(row["client_order_id"], [])
+                    if len(candidates) != 1:
+                        raise ReconciliationError("pending mutation not uniquely verified; manual review required")
+                    item = candidates[0]
+                    self._order_identity(row, item)
+                    status, filled, leaves = self._order_status(item)
+                    if row["status"] == "pending_replace":
+                        parent_id = row["parent_venue_order_id"]
+                        if not parent_id or parent_id == item["id"]:
+                            raise ReconciliationError("invalid replacement lineage")
+                        if parent_id in active_by_id:
+                            raise ReconciliationError("parent and replacement both active; manual review required")
+                        self.connection.execute(
+                            "UPDATE order_lineage SET status='replaced' WHERE venue_order_id=?", (parent_id,)
+                        )
+                    self.connection.execute(
+                        "UPDATE order_lineage SET venue_order_id=?,status=?,filled_quantity=?,"
+                        "leaves_quantity=?,updated_at=CURRENT_TIMESTAMP WHERE client_order_id=?",
+                        (item["id"], status, decimal_text(filled), decimal_text(leaves), row["client_order_id"]),
+                    )
+                    if filled > 0:
+                        self.reconcile_fills(item["id"])
+                # Re-query after potential pending adoption.
+                rows = list(self.connection.execute("SELECT * FROM order_lineage"))
+                local_by_id = {row["venue_order_id"]: row for row in rows if row["venue_order_id"]}
+                if any(row["status"] in {"pending_new", "pending_replace", "replace_uncertain"} for row in rows):
+                    raise ReconciliationError("unresolved mutation remains")
+                if any(vid not in local_by_id for vid in active_by_id):
+                    raise ReconciliationError("untracked venue order exists")
+                for row in rows:
+                    if row["status"] not in {"new", "partially_filled", "pending_new"}:
+                        continue
+                    vid = row["venue_order_id"]
+                    item = active_by_id.get(vid) or history_by_id.get(vid)
+                    if item is None:
+                        raise ReconciliationError("previously active order missing from venue history")
+                    self._order_identity(row, item)
+                    status, filled, leaves = self._order_status(item)
+                    self.connection.execute(
+                        "UPDATE order_lineage SET status=?,filled_quantity=?,leaves_quantity=?,"
+                        "updated_at=CURRENT_TIMESTAMP WHERE venue_order_id=?",
+                        (status, decimal_text(filled), decimal_text(leaves), vid),
+                    )
+                    if filled > 0:
+                        self.reconcile_fills(vid)
+                for vid, item in active_by_id.items():
+                    row = self.connection.execute(
+                        "SELECT status FROM order_lineage WHERE venue_order_id=?", (vid,)
+                    ).fetchone()
+                    if not row or row["status"] not in {"new", "partially_filled"}:
+                        raise ReconciliationError("unverified active order/status mismatch")
+                self.connection.execute("COMMIT")
+                self.reconciled = True
+            except Exception:
+                if self.connection.in_transaction:
+                    self.connection.execute("ROLLBACK")
+                raise
 
     def reconcile_fills(self, venue_order_id: str) -> None:
-        """Upsert maker/taker fills and fees for an affected venue order."""
+        """Record the official Trade wire values without inventing fee/maker information."""
         payload = self.client.get_fills(venue_order_id)
         if not isinstance(payload, Sequence) or isinstance(payload, (str, bytes)):
-            raise ReconciliationError("fills response must be a list")
+            raise ReconciliationError("fills must be an array")
         for item in payload:
             if not isinstance(item, Mapping):
                 raise ReconciliationError("malformed fill")
-            try:
-                fill_id = str(item["fill_id"])
-                quantity = decimal_text(decimal_from_api(item["quantity"], "fill quantity"))
-                price = decimal_text(decimal_from_api(item["price"], "fill price"))
-                fee = decimal_text(decimal_from_api(item["fee"], "fill fee"))
-                fee_currency = str(item["fee_currency"]).upper()
-                is_maker = item["im"]
-            except KeyError as exc:
-                raise ReconciliationError("fill is missing required fields") from exc
-            if not fill_id or not fee_currency or not isinstance(is_maker, bool):
-                raise ReconciliationError("fill fields have invalid types")
+            fill_id = item.get("tid", item.get("fill_id"))
+            quantity = item.get("q", item.get("quantity"))
+            price = item.get("p", item.get("price"))
+            if not isinstance(fill_id, str) or not fill_id:
+                raise ReconciliationError("fill id missing")
+            qty = decimal_from_api(quantity, "fill quantity")
+            pr = decimal_from_api(price, "fill price")
+            if qty <= 0 or pr <= 0:
+                raise ReconciliationError("fill values must be positive")
+            fee = item.get("fee")
+            fee_value = decimal_text(decimal_from_api(fee, "fee")) if fee is not None else None
+            maker = item.get("im")
+            if maker is not None and not isinstance(maker, bool):
+                raise ReconciliationError("invalid maker field")
             self.connection.execute(
-                "INSERT OR IGNORE INTO fills(fill_id,venue_order_id,quantity,price,fee,fee_currency,is_maker) VALUES(?,?,?,?,?,?,?)",
-                (fill_id, venue_order_id, quantity, price, fee, fee_currency, int(is_maker)),
+                "INSERT OR IGNORE INTO fills_wire "
+                "(fill_id,venue_order_id,quantity,price,fee,fee_currency,is_maker) VALUES(?,?,?,?,?,?,?)",
+                (fill_id, venue_order_id, decimal_text(qty), decimal_text(pr),
+                 fee_value, item.get("fee_currency"), None if maker is None else int(maker)),
             )
 
     def close(self) -> None:
-        """Close the SQLite connection."""
         self.connection.close()
