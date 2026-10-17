@@ -45,6 +45,28 @@ ainoastaan prosessin muistissa. Pilotin `report()` ei palauta
 saldoja tai toimeksiantotunnisteita. Tulevan tuotantokäyttäjän
 lokitus, tukityökalut ja käyttöliittymä on arvioitava erikseen.
 
+## Prosessin keskeytys ja pyyntöbudjetin pysyvyys
+
+Uusi `pilot_budget_store.py` tallentaa kokeellisen GET-budjetin
+SQLiteen WAL + `synchronous=FULL` -asetuksilla. Jokainen GET
+**varataan ja transaktio committoidaan ennen verkko-/mock-kutsua**.
+Kulutettua yritystä ei hyvitetä, vaikka yhteys katkeaa, HTTP 429
+palautuu tai prosessi kuolee pyynnön välissä. Pyyntömäärää ei voi
+nostaa rinnakkaisilla säikeillä. Kerran olemassa olevaan
+tietokantaan ei voi tässä toteutuksessa avata uutta
+pilotti-istuntoa, vaikka aiempi prosessi olisi kaatunut.
+Uusi hyväksyntä tarvitaan, eikä hiljaista reset-toimintoa ole.
+
+**Tärkeä rajaus:** tämä durable-ledger hyväksyy **vain**
+`OFFLINE_MOCK_ONLY`-käytön ja hylkää
+`mode="REAL_ACCOUNT"`-arvon. Offline-testit todentavat
+käyttäytymisen Windowsissa/Ubuntussa. Oikean tilin
+kertaluonteinen käynnistin, asennuksen allekirjoituksen
+tarkistus, tilinhaltijan suostumuksen tallennus ja
+koodin avaaminen hyväksytylle reaaliyhteydelle ovat
+erillisiä myöhempiä töitä. Tällä estetään vahingossa
+live-käyttöön päätyvä testi.
+
 ## Offline-testit ja tämän työn hyväksyminen
 
 - Windows/Ubuntu `tests/test_bounded_account_pilot.py`:
