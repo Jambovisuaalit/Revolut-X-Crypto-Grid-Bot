@@ -91,8 +91,8 @@ def status_through_loopback(supervisor_db: Path | None = None) -> dict[str, Any]
             if index_code != 200 or "text/html" not in html_headers.get("Content-Type", "") or b'id="root"' not in html:
                 raise RuntimeError("REACT_INDEX_UNAVAILABLE")
             # Only hashed compiled JS/CSS is accepted. No legacy app.js fallback.
-            scripts = re.findall(rb'src="\\./assets/([A-Za-z0-9_.-]+\\.js)"', html)
-            styles = re.findall(rb'href="\\./assets/([A-Za-z0-9_.-]+\\.css)"', html)
+            scripts = re.findall(rb'src="\./assets/([A-Za-z0-9_.-]+\.js)"', html)
+            styles = re.findall(rb'href="\./assets/([A-Za-z0-9_.-]+\.css)"', html)
             if not scripts or not styles:
                 raise RuntimeError("REACT_COMPILED_ASSETS_MISSING")
             for name, expected_type in [(x, "javascript") for x in scripts] + [(x, "text/css") for x in styles]:
