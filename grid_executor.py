@@ -5,10 +5,11 @@ from __future__ import annotations
 import sqlite3
 import threading
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterator, Mapping, Sequence
 
 from precision_engine import PairRules, PrecisionError, SymbolNormalizer, decimal_from_api, decimal_text
 from revolut_x_client import ApiError, RevolutXClient
@@ -48,6 +49,7 @@ class GridExecutor:
         self._lock = threading.RLock()
         self.connection = sqlite3.connect(Path(database_path), isolation_level=None, check_same_thread=False)
         self.connection.row_factory = sqlite3.Row
+        self.connection.execute('PRAGMA busy_timeout=5000')
         self._create_schema()
         self.reconciled = False
 
@@ -73,6 +75,9 @@ class GridExecutor:
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_one_replacement_per_parent
+                ON order_lineage(parent_venue_order_id)
+                WHERE parent_venue_order_id IS NOT NULL;
             CREATE TABLE IF NOT EXISTS bot_metadata (
                 key TEXT PRIMARY KEY, value TEXT NOT NULL
             );
@@ -86,6 +91,32 @@ class GridExecutor:
             );
             """
         )
+
+    @contextmanager
+    def _write_transaction(self) -> Iterator[None]:
+        """Serialize writers across SQLite connections/processes.
+
+        Do not hold this transaction during a network request. A failed
+        preflight rolls back the entire reservation/intent mutation.
+        """
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+            self.connection.execute("COMMIT")
+        except BaseException:
+            if self.connection.in_transaction:
+                self.connection.execute("ROLLBACK")
+            raise
+
+    def _assert_no_inflight(self) -> None:
+        """Block fresh mutations while another order has an unknown outcome."""
+        row = self.connection.execute(
+            "SELECT client_order_id FROM order_lineage "
+            "WHERE status IN ('pending_new','pending_replace','replace_uncertain') "
+            "LIMIT 1"
+        ).fetchone()
+        if row is not None:
+            raise ReconciliationError("unresolved write intent exists; reconcile first")
 
     @staticmethod
     def _payload(order: OrderRequest) -> dict[str, Any]:
@@ -169,45 +200,64 @@ class GridExecutor:
         self, *, client_order_id: str, symbol: str, side: str,
         price: Decimal, quantity: Decimal, free_balances: Mapping[str, Decimal]
     ) -> Mapping[str, Any]:
+        """Atomically check identity, available reserve and record write-ahead intent.
+
+        Acknowledgement and venue dispatch happen only AFTER commit. A reused
+        client_order_id can never generate a second POST even across processes.
+        """
         with self._lock:
-            self._assert_not_halted()
-            if not self.reconciled:
-                raise ReconciliationError("startup/recovery reconciliation is required")
             order = self._validated_order(client_order_id, symbol, side, price, quantity)
-            existing = self.connection.execute(
-                "SELECT * FROM order_lineage WHERE client_order_id=?", (client_order_id,)
-            ).fetchone()
-            if existing is not None:
-                if (
-                    existing["symbol"] != order.symbol or existing["side"] != order.side
-                    or decimal_from_api(existing["price"], "price") != order.price
-                    or decimal_from_api(existing["quantity"], "quantity") != order.quantity
-                ):
-                    raise ReconciliationError("client order id reused for a different instruction")
-                if existing["status"] in {"pending_new", "pending_replace", "replace_uncertain"}:
-                    raise ReconciliationError("order outcome remains uncertain; never replay")
-                return {"client_order_id": client_order_id, "venue_order_id": existing["venue_order_id"],
-                        "status": existing["status"], "idempotent": True}
-            self._assert_funding(order, free_balances)
             payload = self._payload(order)
-            if not self.live_trading:
-                return {"dry_run": True, "payload": payload}
-            self.connection.execute(
-                "INSERT INTO order_lineage "
-                "(client_order_id,root_client_order_id,symbol,side,price,quantity,leaves_quantity,status) "
-                "VALUES(?,?,?,?,?,?,?,'pending_new')",
-                (client_order_id, client_order_id, order.symbol, order.side,
-                 decimal_text(order.price), decimal_text(order.quantity), decimal_text(order.quantity)),
-            )
+            with self._write_transaction():
+                self._assert_not_halted()
+                if not self.reconciled:
+                    raise ReconciliationError("startup/recovery reconciliation is required")
+                existing = self.connection.execute(
+                    "SELECT * FROM order_lineage WHERE client_order_id=?", (client_order_id,)
+                ).fetchone()
+                if existing is not None:
+                    if (
+                        existing["symbol"] != order.symbol or existing["side"] != order.side
+                        or decimal_from_api(existing["price"], "price") != order.price
+                        or decimal_from_api(existing["quantity"], "quantity") != order.quantity
+                    ):
+                        raise ReconciliationError("client order id reused for a different instruction")
+                    if existing["status"] in {"pending_new", "pending_replace", "replace_uncertain"}:
+                        raise ReconciliationError("order outcome remains uncertain; never replay")
+                    return {
+                        "client_order_id": client_order_id,
+                        "venue_order_id": existing["venue_order_id"],
+                        "status": existing["status"], "idempotent": True,
+                    }
+                # This query and the reserve sum are protected by the same
+                # database-level write lock as the insertion below.
+                self._assert_no_inflight()
+                self._assert_funding(order, free_balances)
+                if not self.live_trading:
+                    return {"dry_run": True, "payload": payload}
+                self.connection.execute(
+                    "INSERT INTO order_lineage "
+                    "(client_order_id,root_client_order_id,symbol,side,price,quantity,leaves_quantity,status) "
+                    "VALUES(?,?,?,?,?,?,?,'pending_new')",
+                    (client_order_id, client_order_id, order.symbol, order.side,
+                     decimal_text(order.price), decimal_text(order.quantity),
+                     decimal_text(order.quantity)),
+                )
             try:
                 result = self.client.place_order(payload)
-                self.connection.execute(
-                    "UPDATE order_lineage SET venue_order_id=?,status=?,updated_at=CURRENT_TIMESTAMP "
-                    "WHERE client_order_id=?",
-                    (result["venue_order_id"], "venue_pending" if result["state"] == "pending_new" else result["state"], client_order_id),
-                )
+                with self._write_transaction():
+                    changed = self.connection.execute(
+                        "UPDATE order_lineage SET venue_order_id=?,status=?,updated_at=CURRENT_TIMESTAMP "
+                        "WHERE client_order_id=? AND status='pending_new'",
+                        (result["venue_order_id"],
+                         "venue_pending" if result["state"] == "pending_new" else result["state"],
+                         client_order_id),
+                    ).rowcount
+                    if changed != 1:
+                        raise ReconciliationError("create acknowledgement conflicts with local intent")
                 return result
             except Exception:
+                # Persisted pending intent survives an ambiguous venue outcome.
                 self.reconciled = False
                 raise
 
