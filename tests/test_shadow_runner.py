@@ -33,7 +33,7 @@ class ShadowRunnerTests(unittest.TestCase):
         runner.evaluate(snapshot(), NOW)
         later = NOW + timedelta(seconds=1)
         event = runner.evaluate(snapshot("1", "1.01", later), later)
-        self.assertIn("DRAWDOWN_LIMIT", event["reasons"])
+        self.assertIn("DRAWDOWN_LIMIT_POST_FILL", event["reasons"])
         self.assertTrue(event["halted"])
         self.assertEqual(runner.trades, 0)
 
