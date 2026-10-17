@@ -1,0 +1,91 @@
+name: Grid Console - Customer Preview Safety
+on:
+  push:
+    branches: [feat/customer-desktop-shell-v0]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  portal-safety:
+    name: Local-only read-only UI (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    env:
+      LIVE_TRADING: 'false'
+      DRY_RUN: 'true'
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install existing dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Compile local portal and safe launcher
+        run: python -m compileall -q product_shell scripts/start_grid_console.py tests/test_grid_console_v0.py
+      - name: Local read-only web product security tests
+        run: python -m unittest tests.test_grid_console_v0 -v
+      - name: Full existing regression suite
+        run: python -m unittest discover -s tests -v
+      - name: Check product release readiness truthfulness
+        run: python scripts/check_grid_console_release_gate.py --output grid-console-artifacts/release-gate.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: grid-console-gate-${{ matrix.os }}
+          path: grid-console-artifacts/release-gate.json
+          if-no-files-found: warn
+
+  windows-preview:
+    name: Unsigned Windows offline preview artifact - NOT a release
+    needs: portal-safety
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      LIVE_TRADING: 'false'
+      DRY_RUN: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install frozen-build tool
+        run: python -m pip install -r requirements.txt "pyinstaller>=6,<7"
+      - name: Build 127.0.0.1-only preview executable
+        run: python -m PyInstaller --noconfirm --clean --onefile --console --name GridConsolePreview --add-data "product_shell/assets;product_shell/assets" --add-data "configs/eth_eur_grid_shadow_v1.toml;configs" scripts/start_grid_console.py
+      - name: Verify binary exists
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist/GridConsolePreview.exe")) { throw "Preview executable missing" }
+      - name: Verify preview binary starts locally and still disables trading
+        shell: pwsh
+        run: |
+          $proc = Start-Process -FilePath (Resolve-Path "dist/GridConsolePreview.exe").Path -ArgumentList @("--port", "18769", "--no-browser") -PassThru
+          try {
+            $ready = $false
+            for ($i = 0; $i -lt 40; $i++) {
+              Start-Sleep -Seconds 1
+              try {
+                $state = Invoke-RestMethod -Uri "http://127.0.0.1:18769/api/status" -TimeoutSec 2
+                if ($state.mode -eq "SHADOW_ONLY" -and $state.live_orders -eq "DISABLED" -and $state.account_connection -eq "NOT_CONNECTED") {
+                  $ready = $true
+                  break
+                }
+              } catch {}
+            }
+            if (-not $ready) { throw "Windows preview binary failed local smoke" }
+            Write-Host "PASS unsigned EXE launches local-only and remains NO-LIVE"
+          } finally {
+            taskkill /PID $proc.Id /T /F | Out-Null
+          }
+      - name: Upload unsigned non-trading preview (not customer-ready)
+        uses: actions/upload-artifact@v4
+        with:
+          name: GridConsolePreview-Windows-UNSIGNED-NO-LIVE
+          path: dist/GridConsolePreview.exe
+          if-no-files-found: error
