@@ -654,11 +654,25 @@ class GridExecutor:
             maker = item.get("im")
             if maker is not None and not isinstance(maker, bool):
                 raise ReconciliationError("invalid maker field")
+            existing = self.connection.execute(
+                "SELECT * FROM fills_wire WHERE fill_id=?", (fill_id,)
+            ).fetchone()
+            values = (
+                venue_order_id, decimal_text(qty), decimal_text(pr),
+                fee_value, item.get("fee_currency"), None if maker is None else int(maker)
+            )
+            if existing is not None:
+                stored = (
+                    existing["venue_order_id"], existing["quantity"], existing["price"],
+                    existing["fee"], existing["fee_currency"], existing["is_maker"]
+                )
+                if stored != values:
+                    raise ReconciliationError("venue fill conflicts with immutable local fill")
+                continue
             self.connection.execute(
-                "INSERT OR IGNORE INTO fills_wire "
+                "INSERT INTO fills_wire "
                 "(fill_id,venue_order_id,quantity,price,fee,fee_currency,is_maker) VALUES(?,?,?,?,?,?,?)",
-                (fill_id, venue_order_id, decimal_text(qty), decimal_text(pr),
-                 fee_value, item.get("fee_currency"), None if maker is None else int(maker)),
+                (fill_id, *values),
             )
 
     def close(self) -> None:
