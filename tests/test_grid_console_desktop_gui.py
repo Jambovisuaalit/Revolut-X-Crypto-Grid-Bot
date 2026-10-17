@@ -9,19 +9,34 @@ import unittest
 from unittest.mock import patch
 
 from windows_distribution import grid_console_desktop as gui
+from tests.react_fixture import make_react_fixture
 
 
 class GridConsoleDesktopTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls._bundle_temp = tempfile.TemporaryDirectory()
+        cls.react_root = make_react_fixture(Path(cls._bundle_temp.name))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._bundle_temp.cleanup()
+
+    def offline_status(self):
+        return gui.status_through_loopback(react_root=self.react_root)
+
     def test_gui_01_loopback_ui_and_status_are_available(self):
-        result = gui.status_through_loopback()
+        result = self.offline_status()
         self.assertEqual(result["schema"], gui.SCHEMA)
         self.assertEqual(result["status"], "DEV_DESKTOP_PASS")
-        self.assertEqual(result["ui"], "GRID_CONSOLE_LOCAL_GUI")
+        self.assertEqual(result["ui"], "GRID_CONSOLE_REACT_LOCAL_GUI")
         self.assertEqual(result["http_bind"], "127.0.0.1")
         self.assertEqual(result["local_assets"], "VERIFIED")
+        self.assertGreaterEqual(result["react_assets"], 2)
+        self.assertEqual(result["runtime_status"], "NOT_CONFIGURED")
 
     def test_gui_02_no_api_or_market_collector(self):
-        result = gui.status_through_loopback()
+        result = self.offline_status()
         self.assertEqual(result["account_connection"], "NOT_CONNECTED")
         self.assertEqual(result["live_orders"], "DISABLED")
         self.assertEqual(result["market_collector"], "NOT_STARTED")
@@ -54,7 +69,11 @@ class GridConsoleDesktopTests(unittest.TestCase):
     def test_gui_05_self_test_report_contains_no_sensitive_data(self):
         with tempfile.TemporaryDirectory() as folder:
             out=Path(folder)/"result.json"
-            code=gui.main(["--self-test", "--report", str(out)])
+            original = gui.status_through_loopback
+            with patch.object(gui, "status_through_loopback",
+                              side_effect=lambda supervisor_db=None: original(
+                                  supervisor_db, react_root=self.react_root)):
+                code=gui.main(["--self-test", "--report", str(out)])
             self.assertEqual(code,0)
             payload=json.loads(out.read_text("utf-8"))
             self.assertEqual(payload["status"],"DEV_DESKTOP_PASS")
