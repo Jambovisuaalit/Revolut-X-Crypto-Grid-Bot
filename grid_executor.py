@@ -163,12 +163,19 @@ class GridExecutor:
         rounded_price, rounded_quantity = rules.normalize(price, quantity)
         return OrderRequest(client_order_id, normalized_symbol, side, rounded_price, rounded_quantity)
 
-    def _reserved(self, currency: str) -> Decimal:
+    def _reserved(self, currency: str, *, exclude_client_id: str | None = None) -> Decimal:
+        """Count all persistently reserved cash/asset quantity under the DB lock."""
         total = Decimal("0")
-        for row in self.connection.execute(
+        query = (
             "SELECT symbol,side,price,leaves_quantity FROM order_lineage "
-            "WHERE status IN ('pending_new','pending_replace','new','partially_filled','replace_uncertain')"
-        ):
+            "WHERE status IN ('pending_new','pending_replace','venue_pending',"
+            "'new','partially_filled','replace_uncertain')"
+        )
+        args: tuple[str, ...] = ()
+        if exclude_client_id is not None:
+            query += " AND client_order_id != ?"
+            args = (exclude_client_id,)
+        for row in self.connection.execute(query, args):
             base, quote = str(row["symbol"]).split("/", 1)
             leaves = decimal_from_api(row["leaves_quantity"], "leaves_quantity")
             if row["side"] == "buy" and quote == currency:
@@ -177,7 +184,10 @@ class GridExecutor:
                 total += leaves
         return total
 
-    def _assert_funding(self, order: OrderRequest, free_balances: Mapping[str, Decimal]) -> None:
+    def _assert_funding(
+        self, order: OrderRequest, free_balances: Mapping[str, Decimal],
+        *, exclude_client_id: str | None = None,
+    ) -> None:
         base, quote = order.symbol.split("/", 1)
         currency = quote if order.side == "buy" else base
         required = order.price * order.quantity if order.side == "buy" else order.quantity
@@ -186,7 +196,7 @@ class GridExecutor:
             raise PrecisionError(f"invalid/missing free balance: {currency}")
         if required > free * Decimal("0.05"):
             raise PrecisionError("single order exceeds 5% of free balance")
-        if required + self._reserved(currency) > free:
+        if required + self._reserved(currency, exclude_client_id=exclude_client_id) > free:
             raise PrecisionError("aggregate reservation exceeds free balance")
 
     def _assert_not_halted(self) -> None:
@@ -265,41 +275,76 @@ class GridExecutor:
         self, venue_order_id: str, *, new_price: Decimal,
         free_balances: Mapping[str, Decimal], client_order_id: str | None = None
     ) -> Mapping[str, Any]:
+        """Reserve one successor to one verified active parent, atomically.
+
+        Parent state, lineage ownership, absence of another child, funding,
+        and both persisted state changes are evaluated under BEGIN IMMEDIATE.
+        Network PUT happens after commit; no uncertain write is replayed.
+        """
         with self._lock:
-            self._assert_not_halted()
-            if not self.reconciled:
-                raise ReconciliationError("reconciliation is required")
-            parent = self.connection.execute(
-                "SELECT * FROM order_lineage WHERE venue_order_id=?", (venue_order_id,)
-            ).fetchone()
-            if parent is None or parent["status"] not in {"new", "partially_filled", "venue_pending"}:
-                raise ReconciliationError("only known active orders may be replaced")
             child_id = client_order_id or str(uuid.uuid4())
-            order = self._validated_order(
-                child_id, parent["symbol"], parent["side"], new_price,
-                decimal_from_api(parent["leaves_quantity"], "leaves_quantity")
-            )
-            payload = self._replace_payload(order)
-            existing = self.connection.execute(
-                "SELECT 1 FROM order_lineage WHERE client_order_id=?", (child_id,)
-            ).fetchone()
-            if existing:
-                raise ReconciliationError("replacement client id already used; never replay")
-            if not self.live_trading:
-                return {"dry_run": True, "payload": payload}
-            self.connection.execute("BEGIN IMMEDIATE")
-            try:
-                # Exclude replaced order from aggregate reserves only inside the
-                # DB transaction. Rollback restores the parent if checks fail.
-                self.connection.execute(
-                    "UPDATE order_lineage SET status='replaced' WHERE venue_order_id=?",
+            with self._write_transaction():
+                self._assert_not_halted()
+                if not self.reconciled:
+                    raise ReconciliationError("reconciliation is required")
+                self._assert_no_inflight()
+                parent = self.connection.execute(
+                    "SELECT * FROM order_lineage WHERE venue_order_id=?", (venue_order_id,)
+                ).fetchone()
+                if parent is None or parent["status"] not in {"new", "partially_filled"}:
+                    raise ReconciliationError("only reconciled active orders may be replaced")
+                if not parent["client_order_id"] or not parent["root_client_order_id"]:
+                    raise ReconciliationError("parent lineage identifiers are missing")
+                root = self.connection.execute(
+                    "SELECT client_order_id,root_client_order_id,version FROM order_lineage "
+                    "WHERE client_order_id=?", (parent["root_client_order_id"],)
+                ).fetchone()
+                if (root is None or root["root_client_order_id"] != root["client_order_id"]
+                        or root["version"] != 1 or parent["version"] < 1):
+                    raise ReconciliationError("parent root lineage is invalid")
+                if parent["client_order_id"] != parent["root_client_order_id"]:
+                    previous = self.connection.execute(
+                        "SELECT root_client_order_id,version FROM order_lineage "
+                        "WHERE venue_order_id=?", (parent["parent_venue_order_id"],)
+                    ).fetchone()
+                    if (previous is None
+                            or previous["root_client_order_id"] != parent["root_client_order_id"]
+                            or previous["version"] + 1 != parent["version"]):
+                        raise ReconciliationError("parent predecessor lineage is invalid")
+                if self.connection.execute(
+                    "SELECT 1 FROM order_lineage WHERE parent_venue_order_id=? LIMIT 1",
                     (venue_order_id,),
+                ).fetchone() is not None:
+                    raise ReconciliationError("parent already has a replacement successor")
+                if self.connection.execute(
+                    "SELECT 1 FROM order_lineage WHERE client_order_id=?", (child_id,)
+                ).fetchone() is not None:
+                    raise ReconciliationError("replacement client id already used; never replay")
+                quantity = decimal_from_api(parent["leaves_quantity"], "parent remaining quantity")
+                if (quantity <= 0 or
+                        quantity > decimal_from_api(parent["quantity"], "parent quantity")):
+                    raise ReconciliationError("parent has invalid remaining quantity")
+                order = self._validated_order(
+                    child_id, parent["symbol"], parent["side"], new_price, quantity
                 )
-                self._assert_funding(order, free_balances)
-                self.connection.execute(
-                    "UPDATE order_lineage SET status='replace_uncertain' WHERE venue_order_id=?",
-                    (venue_order_id,),
+                payload = self._replace_payload(order)
+                # Venue PUT replaces an existing reservation rather than
+                # adding a new independent one. Exclude only that parent for
+                # preflight, without mutating its status even transiently.
+                self._assert_funding(
+                    order, free_balances, exclude_client_id=parent["client_order_id"]
                 )
+                if not self.live_trading:
+                    return {"dry_run": True, "payload": payload}
+                changed = self.connection.execute(
+                    "UPDATE order_lineage SET status='replace_uncertain',"
+                    "updated_at=CURRENT_TIMESTAMP "
+                    "WHERE venue_order_id=? AND client_order_id=? AND status=? AND version=?",
+                    (venue_order_id, parent["client_order_id"],
+                     parent["status"], parent["version"]),
+                ).rowcount
+                if changed != 1:
+                    raise ReconciliationError("parent state changed during replacement")
                 self.connection.execute(
                     "INSERT INTO order_lineage "
                     "(client_order_id,parent_venue_order_id,root_client_order_id,symbol,side,price,"
@@ -308,28 +353,31 @@ class GridExecutor:
                      order.side, decimal_text(order.price), decimal_text(order.quantity),
                      decimal_text(order.quantity), parent["version"] + 1),
                 )
-                self.connection.execute("COMMIT")
-            except Exception:
-                self.connection.execute("ROLLBACK")
-                raise
             try:
                 result = self.client.replace_order(venue_order_id, payload)
                 if result["venue_order_id"] == venue_order_id:
                     raise ReconciliationError("replacement response reused parent venue id")
-                self.connection.execute("BEGIN IMMEDIATE")
-                self.connection.execute(
-                    "UPDATE order_lineage SET status='replaced' WHERE venue_order_id=?", (venue_order_id,)
-                )
-                self.connection.execute(
-                    "UPDATE order_lineage SET venue_order_id=?,status=? WHERE client_order_id=?",
-                    (result["venue_order_id"], "venue_pending" if result["state"] == "pending_new" else result["state"], child_id),
-                )
-                self.connection.execute("COMMIT")
+                with self._write_transaction():
+                    parent_update = self.connection.execute(
+                        "UPDATE order_lineage SET status='replaced',"
+                        "updated_at=CURRENT_TIMESTAMP "
+                        "WHERE venue_order_id=? AND status='replace_uncertain'",
+                        (venue_order_id,),
+                    ).rowcount
+                    child_update = self.connection.execute(
+                        "UPDATE order_lineage SET venue_order_id=?,status=?,"
+                        "updated_at=CURRENT_TIMESTAMP "
+                        "WHERE client_order_id=? AND parent_venue_order_id=? "
+                        "AND root_client_order_id=? AND status='pending_replace'",
+                        (result["venue_order_id"],
+                         "venue_pending" if result["state"] == "pending_new" else result["state"],
+                         child_id, venue_order_id, parent["root_client_order_id"]),
+                    ).rowcount
+                    if parent_update != 1 or child_update != 1:
+                        raise ReconciliationError("replacement acknowledgement conflicts with lineage")
                 return result
             except Exception:
-                # Do not revert to "new": parent and child may BOTH be present at the venue.
-                if self.connection.in_transaction:
-                    self.connection.execute("ROLLBACK")
+                # Committed pending intent stays available for venue reconciliation.
                 self.reconciled = False
                 raise
 
