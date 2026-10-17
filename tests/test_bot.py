@@ -228,6 +228,35 @@ class ExecutorTests(unittest.TestCase):
         self.assertTrue(supervisor.check_drawdown(Decimal("97")))
         self.assertTrue(self.client.cancelled)
         self.assertEqual(supervisor._metadata("kill_switch_triggered"), "true")
+        with self.assertRaises(ReconciliationError):
+            self.create()
+        with self.assertRaises(ReconciliationError):
+            self.executor.replace_order(uid(), new_price=Decimal("101"),
+                                        free_balances={"USD": Decimal("100000")})
+
+    def test_wrong_replacement_parent_lineage_blocks_recovery(self):
+        result = self.create()
+        self.client.lost_put_reply = True
+        with self.assertRaises(UncertainMutationError):
+            self.executor.replace_order(
+                result["venue_order_id"], new_price=Decimal("101"),
+                free_balances={"USD": Decimal("100000")}, client_order_id=uid()
+            )
+        self.client.active[0]["previous_order_id"] = uid()
+        with self.assertRaises(ReconciliationError):
+            self.restart()
+        self.assertFalse(self.executor.reconciled)
+        self.assertEqual(len(self.client.replaced), 1)
+
+    def test_duplicate_client_id_in_venue_history_blocks_recovery(self):
+        cid = uid()
+        self.client.lost_post_reply = True
+        with self.assertRaises(UncertainMutationError):
+            self.create(cid)
+        self.client.history.append(dict(self.client.active[0], id=uid()))
+        with self.assertRaises(ReconciliationError):
+            self.restart()
+        self.assertEqual(len(self.client.placed), 1)
 
 
 class OfficialApiContracts(unittest.TestCase):
