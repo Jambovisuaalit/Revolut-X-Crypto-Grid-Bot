@@ -177,7 +177,20 @@ class LocalRuntimeTests(unittest.TestCase):
         self.assertEqual(status["status"],"BLOCKED")
         self.assertNotIn("TOP_SECRET",json.dumps(status))
 
-    def test_13_loopback_http_api_runtime_is_only_readable(self):
+    def test_13_hidden_old_bad_order_cannot_escape_capped_journal_validation(self):
+        with closing(sqlite3.connect(self.db)) as con:
+            con.execute("INSERT INTO order_lineage(client_order_id,venue_order_id,side,status,created_at) "
+                        "VALUES(?,?,?,?,?)",("old-secret",None,"buy","UNSAFE_LEGACY_STATUS","2000-01-01 00:00:00"))
+            con.executemany(
+                "INSERT INTO order_lineage(client_order_id,venue_order_id,side,status,created_at) "
+                "VALUES(?,?,?,?,?)",
+                [(f"new-{i}",None,"buy","filled","2026-10-17 08:00:00") for i in range(45)])
+            con.commit()
+        result=inspect_local_runtime(self.db,NOW)
+        self.assertEqual(result["status"],"BLOCKED")
+        self.assertNotIn("UNSAFE_LEGACY_STATUS",json.dumps(result))
+
+    def test_14_loopback_http_api_runtime_is_only_readable(self):
         self.put_meta(supervisor_state="STOPPED",kill_switch_triggered="true",
                       supervisor_reason="HARD_DRAWDOWN_3PCT")
         server=local_server(None,0,clock=lambda:NOW,supervisor_db=self.db)
@@ -204,7 +217,7 @@ class LocalRuntimeTests(unittest.TestCase):
             server.server_close()
             worker.join(timeout=5)
 
-    def test_14_healthy_lease_still_only_offline_monitored_not_live(self):
+    def test_15_healthy_lease_still_only_offline_monitored_not_live(self):
         self.put_meta(supervisor_state="OFFLINE_MONITORING",
                       supervisor_heartbeat_ms=NOW-500,
                       supervisor_lease_until_ms=NOW+10000,
