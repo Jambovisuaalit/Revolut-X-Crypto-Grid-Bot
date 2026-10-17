@@ -92,8 +92,11 @@ def run_case(directory, invisible):
         env={**os.environ, "LIVE_TRADING": "false"},
     )
     assert result.returncode == 73, f"expected abrupt exit 73; got {result.returncode}: {result.stderr}"
-    with sqlite3.connect(db) as conn:
+    conn = sqlite3.connect(db)
+    try:
         row = conn.execute("SELECT status FROM order_lineage WHERE client_order_id=?", (CID,)).fetchone()
+    finally:
+        conn.close()
     assert row and row[0] == "pending_new", f"write-ahead intent missing: {row}"
     ex = executor(db, Exchange(venue, invisible=invisible))
     try:
