@@ -1,0 +1,55 @@
+name: Offline Supervisor Lifecycle - Fail Closed
+on:
+  push:
+    branches:
+      - feat/supervisor-offline-lifecycle-v1
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  offline-lifecycle:
+    name: offline-supervisor (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      LIVE_TRADING: "false"
+      DRY_RUN: "true"
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r requirements.txt
+      - name: Offline supervisor compile
+        run: python -m compileall -q bot_main.py supervisor_runtime.py grid_executor.py tests
+      - name: Full existing risk/recovery suite
+        run: python -m unittest discover -s tests -v
+      - name: Dedicated offline supervisor lifecycle tests
+        run: python -m unittest tests.test_supervisor_runtime -v
+      - name: Bounded CLI with synthetic-only portfolio
+        run: python bot_main.py --offline-fixture --db offline-artifacts/offline-supervisor.sqlite --ticks 3 --interval-ms 10 --report offline-artifacts/report.json
+      - name: Verify fixture status and zero exchange actions
+        run: python scripts/check_offline_supervisor_report.py offline-artifacts/report.json
+      - name: Crash and restart recovery integration
+        run: python scripts/process_recovery_integration.py
+      - name: Existing 3 percent drawdown integration
+        run: python scripts/drawdown_integration.py
+      - name: Verify existing recovery evidence with exact CI SHA
+        run: python scripts/check_pr3_recovery_gate.py --report-dir recovery-artifacts --commit-sha ${{ github.sha }}
+      - name: Archive test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: offline-supervisor-${{ matrix.os }}
+          path: |
+            offline-artifacts/report.json
+            recovery-artifacts/*.json
+          if-no-files-found: warn
