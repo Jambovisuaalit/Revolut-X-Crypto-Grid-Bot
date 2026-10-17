@@ -53,7 +53,7 @@ def check_status(payload: dict[str, Any]) -> None:
 def status_through_loopback() -> dict[str, Any]:
     """Exercise existing HTTP route, including forbidden HTTP mutations."""
     assert_safe_env()
-    with closing(local_server(None, 0)) as server:
+    with local_server(None, 0) as server:
         thread = Thread(target=server.serve_forever, daemon=True, name="grid-console-test-http")
         thread.start()
         try:
