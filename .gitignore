@@ -4,4 +4,8 @@ bot_state.db
 bot_state.db-shm
 bot_state.db-wal
 .venv/
+public-data/
+shadow-artifacts/
+*.sqlite-wal
+*.sqlite-shm
 
