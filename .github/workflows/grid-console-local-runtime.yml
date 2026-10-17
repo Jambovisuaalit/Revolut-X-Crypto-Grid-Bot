@@ -1,0 +1,55 @@
+name: Grid Console Local Supervisor Readonly - Safety Integration
+on:
+  push:
+    branches: [feat/grid-console-local-supervisor-readonly-v1]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  offline-runtime-dashboard:
+    name: read-only-runtime-dashboard (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      LIVE_TRADING: 'false'
+      DRY_RUN: 'true'
+      ACCOUNT_NETWORK_TESTS: 'DISABLED'
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r requirements.txt
+      - run: python -m compileall -q product_shell windows_distribution tests
+      - name: Dedicated SQLite read-only supervisor tests
+        run: python -m unittest tests.test_local_supervisor_view -v
+      - name: Existing Finnish console and Windows desktop entry tests
+        run: python -m unittest tests.test_grid_console_v0 tests.test_grid_console_desktop_gui -v
+      - name: Complete combined regression suite
+        run: python -m unittest discover -s tests -v
+      - name: Run local GUI offline HTTP self-test
+        run: python windows_distribution/grid_console_desktop.py --self-test --report runtime-artifacts/gui-offline-report.json
+      - name: Verify existing risk lock and process recovery tests
+        run: |
+          python scripts/process_recovery_integration.py
+          python scripts/drawdown_integration.py
+          python scripts/check_pr3_recovery_gate.py --report-dir recovery-artifacts --commit-sha ${{ github.sha }}
+      - name: Verify product is not live/customer-approved
+        run: python scripts/check_grid_console_release_gate.py --output runtime-artifacts/product-no-go.json
+      - name: Upload redacted safety evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: grid-console-local-runtime-${{ matrix.os }}
+          path: |
+            runtime-artifacts/*.json
+            recovery-artifacts/*.json
+          if-no-files-found: warn
