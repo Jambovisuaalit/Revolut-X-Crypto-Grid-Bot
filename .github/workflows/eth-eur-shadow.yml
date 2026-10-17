@@ -1,0 +1,46 @@
+name: ETH EUR Shadow Grid v1 - Offline Safety
+on:
+  push:
+    branches:
+      - feat/eth-eur-shadow-grid-v1
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  eth-eur-shadow:
+    name: eth-eur-shadow (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      LIVE_TRADING: 'false'
+      DRY_RUN: 'true'
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile isolated strategy
+        run: python -m compileall -q eth_shadow_v1 scripts/run_eth_eur_shadow.py scripts/check_eth_shadow_report.py tests/test_eth_shadow_v1.py
+      - name: Offline ETH/EUR safety and risk matrix
+        run: python -m unittest tests.test_eth_shadow_v1 -v
+      - name: Existing safety regression suite
+        run: python -m unittest discover -s tests -v
+      - name: Deterministic local shadow fixture (no network)
+        run: python scripts/run_eth_eur_shadow.py --fixture-demo --journal shadow-artifacts/state.sqlite --decisions shadow-artifacts/decisions.jsonl --report shadow-artifacts/report.json
+      - name: Validate truthful report and 0 live mutations
+        run: python scripts/check_eth_shadow_report.py shadow-artifacts/report.json
+      - name: Upload shadow test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eth-eur-shadow-${{ matrix.os }}
+          path: |
+            shadow-artifacts/report.json
+            shadow-artifacts/decisions.jsonl
+          if-no-files-found: warn
