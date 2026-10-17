@@ -22,6 +22,7 @@ from typing import Any
 import webbrowser
 
 from product_shell.server import local_server
+from product_shell.local_runtime_readonly import inspect_local_runtime
 
 SCHEMA = "grid-console-windows-gui-offline-v1"
 OFFLINE_REQUIRED = {
@@ -70,14 +71,18 @@ def status_through_loopback() -> dict[str, Any]:
                 raise RuntimeError("LOCAL_STATUS_HTTP_FAILED")
             state = json.loads(body)
             check_status(state)
+            runtime_code, runtime_body, _ = get("/api/runtime")
+            if runtime_code != 200 or json.loads(runtime_body).get("status") != "NOT_CONFIGURED":
+                raise RuntimeError("LOCAL_RUNTIME_ENDPOINT_UNSAFE")
             for route, expected_type in (("/", "text/html"), ("/app.js", "javascript"), ("/style.css", "text/css")):
                 status, content, meta = get(route)
                 if status != 200 or not content or expected_type not in meta.get("Content-Type", ""):
                     raise RuntimeError("LOCAL_UI_ASSETS_UNAVAILABLE")
             for method in ("POST", "PUT", "DELETE", "PATCH"):
-                code, _, _ = get("/api/status", method)
-                if code != 405:
-                    raise RuntimeError("UNSAFE_HTTP_MUTATION_ENABLED")
+                for path in ("/api/status", "/api/runtime"):
+                    code, _, _ = get(path, method)
+                    if code != 405:
+                        raise RuntimeError("UNSAFE_HTTP_MUTATION_ENABLED")
         finally:
             server.shutdown()
             thread.join(timeout=5)
@@ -102,7 +107,7 @@ def run_gui(*, open_browser: bool = True) -> int:
     """Tkinter desktop control window; existing dashboard opens in browser."""
     assert_safe_env()
     import tkinter as tk
-    from tkinter import ttk, messagebox
+    from tkinter import filedialog, messagebox
 
     server = local_server(None, 0)
     url = f"http://127.0.0.1:{server.server_port}/"
@@ -126,8 +131,8 @@ def run_gui(*, open_browser: bool = True) -> int:
         # Tk exists only in graphical mode, not in CI smoke/--self-test.
         window = tk.Tk()
         window.title("Grid Console — Turvallinen esikatselu")
-        window.geometry("600x372")
-        window.minsize(540, 350)
+        window.geometry("600x430")
+        window.minsize(540, 405)
         window.configure(bg="#0e1626")
         window.protocol("WM_DELETE_WINDOW", shutdown)
 
@@ -168,6 +173,55 @@ def run_gui(*, open_browser: bool = True) -> int:
             except Exception:
                 messagebox.showerror("Grid Console", "Selaimen avaaminen epäonnistui. "
                                      "Sovelluksen paikallinen palvelin pysyy käynnissä.")
+
+        db_status = tk.Label(frame, text="Valvojan tietokanta: ei valittu",
+                             bg="#0e1626", fg="#a9b9cb", font=("Segoe UI", 9),
+                             anchor="w")
+        db_status.pack(fill="x", pady=(0, 8))
+
+        def select_local_supervisor_db() -> None:
+            nonlocal server, worker, url
+            if closed:
+                return
+            selected = filedialog.askopenfilename(
+                title="Valitse paikallinen OFFLINE-valvojan SQLite-tietokanta",
+                filetypes=[("SQLite-tietokanta", "*.sqlite *.db"), ("Kaikki tiedostot", "*.*")],
+            )
+            if not selected:
+                return
+            candidate = Path(selected)
+            inspection = inspect_local_runtime(candidate)
+            if inspection.get("reason") in (
+                "DATABASE_UNAVAILABLE", "UNRECOGNIZED_DATABASE_SCHEMA",
+                "LOCAL_DATABASE_READ_FAILED",
+            ):
+                messagebox.showwarning(
+                    "Grid Console", "Tiedostoa ei voida tunnistaa turvalliseksi "
+                    "paikalliseksi valvojan tietokannaksi. Yhteyttä ei avattu."
+                )
+                return
+            try:
+                next_server = local_server(None, 0, supervisor_db=candidate)
+                next_worker = Thread(target=next_server.serve_forever, daemon=True,
+                                     name="grid-console-local-db-http")
+                next_worker.start()
+            except Exception:
+                messagebox.showerror("Grid Console",
+                                     "Paikallisen tietokantanäkymän avaaminen epäonnistui.")
+                return
+            previous_server, previous_worker = server, worker
+            server, worker = next_server, next_worker
+            url = f"http://127.0.0.1:{server.server_port}/"
+            previous_server.shutdown()
+            previous_server.server_close()
+            previous_worker.join(timeout=5)
+            db_status.configure(text="Valvojan tietokanta: paikallinen lukutila")
+            open_dashboard()
+
+        tk.Button(frame, text="Valitse valvojan paikallinen tietokanta (vain luku)",
+                  command=select_local_supervisor_db,
+                  bg="#1d3642", fg="#e7f0f4", font=("Segoe UI", 9),
+                  relief="flat", padx=12, pady=7).pack(fill="x", pady=(0, 8))
 
         tk.Button(actions, text="Avaa Grid Console", command=open_dashboard,
                   bg="#53ccb7", fg="#102030", font=("Segoe UI", 11, "bold"),
