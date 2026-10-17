@@ -33,8 +33,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'INNO_INSTALL_FAILED' }
       - name: Compile offline-only preview and full regression test sources
         run: python -m compileall -q bot_main.py grid_executor.py supervisor_runtime.py windows_distribution tests
-      - name: Existing complete offline safety regression matrix
-        run: python -m unittest discover -s tests -v
       - name: Build bounded offline EXE and unsigned installer
         shell: pwsh
         run: ./windows_distribution/build_windows_dev.ps1
@@ -81,6 +79,8 @@ jobs:
         shell: pwsh
         run: |
           Compress-Archive -Path 'dist/GridConsoleOfflinePreview' -DestinationPath 'windows-artifacts/GridConsoleOfflinePreview-UNSIGNED-DEV-Portable.zip' -Force
+      - name: Existing complete offline safety regression matrix
+        run: python -m unittest discover -s tests -v
       - name: Upload UNSIGNED developer artifacts only
         if: always()
         uses: actions/upload-artifact@v4
