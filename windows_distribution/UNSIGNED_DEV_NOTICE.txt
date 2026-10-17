@@ -1,0 +1,19 @@
+GRID CONSOLE OFFLINE PREVIEW — UNSIGNED DEVELOPMENT BUILD
+
+This is NOT a customer-ready installation, product license, signed release,
+or authorized connection to a Revolut X account.
+
+- Synthetic offline account values only.
+- No exchange API keys, account access, trading, or market-data collector.
+- No live orders, transfers, or paid services.
+- The installer and preview binary in CI are intentionally UNSIGNED.
+- Do NOT bypass Windows SmartScreen or security warnings to install this
+  development artifact on a customer's personal computer.
+- Do NOT distribute as a production product or represent this build
+  as signed, approved, investment-tested, or safe for real trading.
+
+The signed-release verification gate must be evaluated with an independently
+approved publisher certificate thumbprint AND release SHA256 hashes before
+any customer deployment. No such certificate is provisioned in this project.
+
+Source: https://github.com/Jambovisuaalit/Revolut-X-Crypto-Grid-Bot
