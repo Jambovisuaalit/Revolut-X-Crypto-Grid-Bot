@@ -84,8 +84,11 @@ class WindowsUserVault:
         """Apply and verify a protected DACL limited to current user + SYSTEM."""
         win32api, win32con, _, sec, _ = self._native()
         self._assert_not_reparse(path)
-        with sec.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY) as token:
+        token = sec.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY)
+        try:
             user_sid = sec.GetTokenInformation(token, sec.TokenUser)[0]
+        finally:
+            token.Close()
         sys_sid = sec.ConvertStringSidToSid("S-1-5-18")
         acl = sec.ACL()
         acl.AddAccessAllowedAce(sec.ACL_REVISION, win32con.GENERIC_ALL, user_sid)
