@@ -206,6 +206,52 @@ class GridExecutor:
         if row is not None and row["value"] == "true":
             raise ReconciliationError("persistent kill switch is triggered; trading halted")
 
+    def _assert_dispatch_allowed(self, client_order_id: str, expected_status: str) -> None:
+        """Last durable safety check before external I/O.
+
+        SQLite cannot make the later HTTP mutation atomic with an external
+        kill-switch update. This closes the preventable already-halted case,
+        not the irreducible in-flight network race.
+        """
+        with self._write_transaction():
+            self._assert_not_halted()
+            if not self.reconciled:
+                raise ReconciliationError("dispatch blocked until startup reconciliation")
+            row = self.connection.execute(
+                "SELECT status FROM order_lineage WHERE client_order_id=?",
+                (client_order_id,),
+            ).fetchone()
+            if row is None or row["status"] != expected_status:
+                raise ReconciliationError("write intent changed before HTTP dispatch")
+            conflict = self.connection.execute(
+                "SELECT 1 FROM order_lineage "
+                "WHERE client_order_id!=? AND status IN "
+                "('pending_new','pending_replace','replace_uncertain') LIMIT 1",
+                (client_order_id,),
+            ).fetchone()
+            if expected_status == "pending_replace":
+                # The parent must be replace_uncertain and is a partner of
+                # this intent, not a competing mutation.
+                intent = self.connection.execute(
+                    "SELECT parent_venue_order_id FROM order_lineage WHERE client_order_id=?",
+                    (client_order_id,),
+                ).fetchone()
+                parent = self.connection.execute(
+                    "SELECT 1 FROM order_lineage WHERE venue_order_id=? "
+                    "AND status='replace_uncertain'",
+                    (intent["parent_venue_order_id"],),
+                ).fetchone()
+                if parent is None:
+                    raise ReconciliationError("replacement parent changed before dispatch")
+                conflict = self.connection.execute(
+                    "SELECT 1 FROM order_lineage WHERE client_order_id!=? "
+                    "AND venue_order_id!=? AND status IN "
+                    "('pending_new','pending_replace','replace_uncertain') LIMIT 1",
+                    (client_order_id, intent["parent_venue_order_id"]),
+                ).fetchone()
+            if conflict:
+                raise ReconciliationError("another unresolved mutation blocks dispatch")
+
     def _confirm_mutation(
         self, row: sqlite3.Row, acknowledgement: Mapping[str, Any],
         *, parent: sqlite3.Row | None = None,
@@ -309,6 +355,7 @@ class GridExecutor:
                      decimal_text(order.quantity)),
                 )
             try:
+                self._assert_dispatch_allowed(client_order_id, "pending_new")
                 result = self.client.place_order(payload)
                 persisted = self.connection.execute(
                     "SELECT * FROM order_lineage WHERE client_order_id=? AND status='pending_new'",
@@ -416,6 +463,7 @@ class GridExecutor:
                      decimal_text(order.quantity), parent["version"] + 1),
                 )
             try:
+                self._assert_dispatch_allowed(child_id, "pending_replace")
                 result = self.client.replace_order(venue_order_id, payload)
                 child = self.connection.execute(
                     "SELECT * FROM order_lineage WHERE client_order_id=? AND status='pending_replace'",
