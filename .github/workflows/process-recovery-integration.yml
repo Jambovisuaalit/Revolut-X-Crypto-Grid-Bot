@@ -25,6 +25,7 @@ jobs:
       - name: Crash, restart, reconcile, verify no duplicate POST
         env:
           LIVE_TRADING: 'false'
+          PYTHONPATH: ${{ github.workspace }}
         run: python scripts/process_recovery_integration.py
       - name: Upload recovery report
         if: always()
