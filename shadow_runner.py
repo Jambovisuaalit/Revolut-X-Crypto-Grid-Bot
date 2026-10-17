@@ -19,6 +19,7 @@ from typing import Any, Iterable
 from urllib.request import Request, urlopen
 
 from precision_engine import decimal_from_api as dec, decimal_text as fmt
+from shadow_journal import ShadowJournal
 
 PUBLIC_URL = "https://revx.revolut.com/api/2.0/public/order-book/BTC-USD"
 
@@ -258,13 +259,22 @@ def public_snapshot() -> dict[str, Any]:
     return {"timestamp": source["timestamp"], "data": source}
 
 
+def _valid_timestamp(value: str) -> bool:
+    try:
+        parse_timestamp(value)
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", type=Path, help="offline JSONL snapshots")
     parser.add_argument("--public-once", action="store_true", help="one hardcoded unauthenticated GET")
     parser.add_argument("--poll-seconds", type=float, default=0, help="public GET polling interval; 0 means once")
     parser.add_argument("--samples", type=int, default=1, help="maximum public GET observations")
-    parser.add_argument("--state", type=Path, help="durable simulation state")
+    parser.add_argument("--state", type=Path, help="legacy option; use --journal instead")
+    parser.add_argument("--journal", type=Path, help="atomic SQLite shadow journal")
     parser.add_argument("--decisions", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
     args = parser.parse_args()
@@ -273,13 +283,18 @@ def main() -> None:
     if args.samples < 1 or args.poll_seconds < 0 or (args.samples > 1 and args.poll_seconds < 5):
         parser.error("polling requires >=5 seconds between samples")
     runner = ShadowRunner()
-    if args.state and args.state.exists():
-        runner.restore(json.loads(args.state.read_text(encoding="utf-8")))
+    if args.state:
+        parser.error("--state is non-atomic; use --journal")
+    journal = ShadowJournal(args.journal) if args.journal else None
+    if journal:
+        restored = journal.last_state()
+        if restored is not None:
+            runner.restore(restored)
     if args.input is not None:
         snapshots = [json.loads(line) for line in args.input.read_text().splitlines() if line.strip()]
         # Offline replay timestamps are judged at their own capture time;
         # freshness in replay cannot prove freshness of a live feed.
-        stream = ((item, parse_timestamp(item["timestamp"])) for item in snapshots)
+        stream = ((item, parse_timestamp(item["timestamp"]) if isinstance(item, dict) and isinstance(item.get("timestamp"), str) and _valid_timestamp(item["timestamp"]) else datetime.now(timezone.utc)) for item in snapshots)
     else:
         def public_stream():
             for index in range(args.samples):
@@ -290,14 +305,27 @@ def main() -> None:
         stream = public_stream()
     args.decisions.parent.mkdir(parents=True, exist_ok=True)
     args.report.parent.mkdir(parents=True, exist_ok=True)
-    with args.decisions.open("a", encoding="utf-8") as out:
-        for item, now in stream:
-            out.write(json.dumps(runner.evaluate(item, now), sort_keys=True) + "\n")
-            out.flush()
-            os.fsync(out.fileno())
-            if args.state:
-                save_state(args.state, runner)
-    args.report.write_text(json.dumps(runner.report(), indent=2, sort_keys=True) + "\n")
+    try:
+        with args.decisions.open("a", encoding="utf-8") as out:
+            for item, now in stream:
+                decision = runner.evaluate(item, now)
+                if journal:
+                    journal.append(decision, runner.state())
+                else:
+                    out.write(json.dumps(decision, sort_keys=True) + "\n")
+                    out.flush()
+                    os.fsync(out.fileno())
+    except Exception as exc:
+        runner.halted = True
+        runner.violations += 1
+        runner.collection_error = type(exc).__name__
+    finally:
+        if journal:
+            journal.export(args.decisions)
+            journal.close()
+    report = runner.report()
+    report["collection_error"] = getattr(runner, "collection_error", None)
+    args.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
 
 
 if __name__ == "__main__":
