@@ -1,0 +1,112 @@
+name: Windows Offline Package and Authenticode Verification Gate
+on:
+  push:
+    branches:
+      - feat/windows-unsigned-distribution-signature-gate
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows-dev-distribution:
+    name: windows-unsigned-package-and-signature-negative-test
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      LIVE_TRADING: 'false'
+      DRY_RUN: 'true'
+      ACCOUNT_NETWORK_TESTS: 'DISABLED'
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install existing project and build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install -r requirements.txt 'pyinstaller==6.16.0'
+          if ($LASTEXITCODE -ne 0) { throw 'DEPENDENCIES_FAILED' }
+          choco install innosetup -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'INNO_INSTALL_FAILED' }
+      - name: Compile offline-only preview and full regression test sources
+        run: python -m compileall -q bot_main.py grid_executor.py supervisor_runtime.py windows_distribution tests
+      - name: Existing complete offline safety regression matrix
+        run: python -m unittest discover -s tests -v
+      - name: Build bounded offline EXE and unsigned installer
+        shell: pwsh
+        run: ./windows_distribution/build_windows_dev.ps1
+      - name: Smoke-test installed application on ephemeral runner
+        shell: pwsh
+        run: |
+          $setup = (Resolve-Path 'installer-dist/GridConsoleOfflinePreview-UNSIGNED-DEV-Setup.exe').Path
+          $target = Join-Path $env:RUNNER_TEMP 'gridconsole-offline-install'
+          $p = Start-Process -FilePath $setup -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',("/DIR="+$target)) -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw 'OFFLINE_INSTALLER_SMOKE_FAILED' }
+          $exe = Join-Path $target 'GridConsoleOfflinePreview.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { throw 'INSTALLED_EXE_MISSING' }
+          $lines = & $exe --self-test
+          if ($LASTEXITCODE -ne 0) { throw 'INSTALLED_EXE_SMOKE_FAILED' }
+          $result = ($lines | Select-Object -Last 1 | ConvertFrom-Json)
+          if ($result.status -ne 'DEV_DEMO_PASS' -or $result.orders_sent -ne 0 -or
+              $result.account_connected -ne $false -or $result.live_trading -ne 'DISABLED') {
+            throw 'INSTALLED_PREVIEW_UNSAFE'
+          }
+      - name: Assert unsigned dev status and write SHA-256 manifest
+        shell: pwsh
+        run: |
+          ./windows_distribution/Test-WindowsDevBundle.ps1 -PreviewExe 'dist/GridConsoleOfflinePreview/GridConsoleOfflinePreview.exe' -InstallerExe 'installer-dist/GridConsoleOfflinePreview-UNSIGNED-DEV-Setup.exe' -CommitSha '${{ github.sha }}' -Output 'windows-artifacts/dev-manifest.json'
+      - name: Strict release verifier MUST reject unsigned EXE and installer
+        shell: pwsh
+        run: |
+          $paths = @(
+            @('preview','dist/GridConsoleOfflinePreview/GridConsoleOfflinePreview.exe'),
+            @('installer','installer-dist/GridConsoleOfflinePreview-UNSIGNED-DEV-Setup.exe')
+          )
+          foreach ($pair in $paths) {
+            $name = $pair[0]
+            $path = $pair[1]
+            $sha = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+            $out = 'windows-artifacts/'+$name+'-signature-rejection.json'
+            & ./windows_distribution/Verify-WindowsRelease.ps1 -FilePath $path -ExpectedSha256 $sha -ExpectedSignerThumbprint ('A'*40) -ReportPath $out
+            if ($LASTEXITCODE -eq 0) { throw 'UNSIGNED_PACKAGE_WAS_WRONGLY_ACCEPTED' }
+            $report = Get-Content -LiteralPath $out -Raw | ConvertFrom-Json
+            if ($report.status -ne 'FAIL' -or $report.release_approval -ne 'NO_GO') {
+              throw 'FAIL_CLOSED_SIGNATURE_REPORT_MISSING'
+            }
+          }
+      - name: Build portable developer ZIP
+        shell: pwsh
+        run: |
+          Compress-Archive -Path 'dist/GridConsoleOfflinePreview' -DestinationPath 'windows-artifacts/GridConsoleOfflinePreview-UNSIGNED-DEV-Portable.zip' -Force
+      - name: Upload UNSIGNED developer artifacts only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GRID-CONSOLE-WINDOWS-UNSIGNED-DEV-NOT-FOR-CUSTOMERS
+          path: |
+            installer-dist/GridConsoleOfflinePreview-UNSIGNED-DEV-Setup.exe
+            windows-artifacts/*.json
+            windows-artifacts/*.zip
+          if-no-files-found: warn
+  linux-contract-regression:
+    name: linux-source-and-safe-distribution-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      LIVE_TRADING: 'false'
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r requirements.txt
+      - run: python -m compileall -q windows_distribution bot_main.py tests
+      - run: python -m unittest discover -s tests -v
+      - name: Bounded offline packaged-entry smoke before packaging
+        run: python windows_distribution/offline_preview.py --self-test
