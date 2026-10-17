@@ -245,7 +245,7 @@ class GridExecutor:
                     raise ReconciliationError("replacement parent changed before dispatch")
                 conflict = self.connection.execute(
                     "SELECT 1 FROM order_lineage WHERE client_order_id!=? "
-                    "AND venue_order_id!=? AND status IN "
+                    "AND (venue_order_id IS NULL OR venue_order_id!=?) AND status IN "
                     "('pending_new','pending_replace','replace_uncertain') LIMIT 1",
                     (client_order_id, intent["parent_venue_order_id"]),
                 ).fetchone()
