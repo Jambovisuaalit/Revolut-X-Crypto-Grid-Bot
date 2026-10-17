@@ -74,9 +74,12 @@ def order(ex):
 
 def worker(db, venue):
     ex = executor(db, Exchange(venue))
-    ex.reconcile_open_orders()
-    order(ex)
-    raise AssertionError("worker unexpectedly survived venue acceptance")
+    try:
+        ex.reconcile_open_orders()
+        order(ex)
+        raise AssertionError("worker unexpectedly survived venue acceptance")
+    finally:
+        ex.close()
 
 
 def run_case(directory, invisible):
@@ -132,20 +135,29 @@ def main():
         return
     output = Path(os.environ.get("RECOVERY_REPORT_DIR", "recovery-artifacts"))
     output.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory() as td:
-        root = Path(td)
-        reports = []
+    reports = []
+    cleanup_error = None
+    temporary = tempfile.TemporaryDirectory()
+    try:
+        root = Path(temporary.name)
         for name, invisible in (("accepted", False), ("unknown", True)):
             try:
                 reports.append(run_case(root / name, invisible))
             except Exception as exc:
                 reports.append({"scenario": name, "status": "FAIL", "error": repr(exc)})
-        report = {"platform": sys.platform, "scenarios": reports,
-                  "status": "PASS" if all(x["status"] == "PASS" for x in reports) else "FAIL"}
-        atomic_json(output / ("process-recovery-" + sys.platform + ".json"), report)
-        print(json.dumps(report, indent=2))
-        if report["status"] != "PASS":
-            sys.exit(1)
+    finally:
+        try:
+            temporary.cleanup()
+        except Exception as exc:
+            cleanup_error = repr(exc)
+    report = {"platform": sys.platform, "scenarios": reports,
+              "cleanup_error": cleanup_error,
+              "status": "PASS" if len(reports) == 2 and
+              all(x["status"] == "PASS" for x in reports) and cleanup_error is None else "FAIL"}
+    atomic_json(output / ("process-recovery-" + sys.platform + ".json"), report)
+    print(json.dumps(report, indent=2))
+    if report["status"] != "PASS":
+        sys.exit(1)
 
 
 if __name__ == "__main__":
