@@ -202,7 +202,8 @@ def inspect_local_runtime(db_path: Path | None, now_ms: int | None = None) -> di
                 events.append({
                     "time_utc": _timestamp(created_at),
                     "category": "ORDER_LOCAL",
-                    "label": ("Osto" if side == "buy" else "Myynti") + " — " + STATUS_LABEL[state],
+                    "label": ("Osto" if side == "buy" else "Myynti") + " — nykyinen paikallinen tila: " + STATUS_LABEL[state],
+                    "timestamp_kind": "ORDER_CREATED_AT",
                     "uncertain": state in UNCERTAIN,
                 })
             for (created_at,) in fills:
@@ -210,6 +211,7 @@ def inspect_local_runtime(db_path: Path | None, now_ms: int | None = None) -> di
                     "time_utc": _timestamp(created_at),
                     "category": "FILL_LOCAL",
                     "label": "Toteutus kirjattu paikallisesti — ei varmennettu pörssistä",
+                    "timestamp_kind": "FILL_CREATED_AT",
                     "uncertain": False,
                 })
             events.sort(key=lambda x: x["time_utc"], reverse=True)
