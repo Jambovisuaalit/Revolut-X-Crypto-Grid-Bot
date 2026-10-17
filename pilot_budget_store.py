@@ -34,20 +34,28 @@ class DurablePilotLedger:
         self._owner = str(uuid.uuid4())
         self._lock = threading.Lock()
         self._closed = False
-        existed = self.path.exists()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._db = sqlite3.connect(
-            str(self.path), isolation_level=None, check_same_thread=False,
-            timeout=5,
-        )
+        # O_EXCL atomically claims the on-disk name across processes; unlike
+        # an exists() preflight, no foreign DB can be opened then modified.
+        try:
+            fd = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+        except FileExistsError:
+            raise PilotLedgerError("PILOT_LEDGER_ALREADY_EXISTS_MANUAL_REVIEW") from None
+        try:
+            os.close(fd)
+        except BaseException:
+            raise PilotLedgerError("PILOT_LEDGER_FILE_CREATE_FAILED") from None
+        try:
+            self._db = sqlite3.connect(
+                str(self.path), isolation_level=None, check_same_thread=False,
+                timeout=5,
+            )
+        except sqlite3.Error:
+            raise PilotLedgerError("PILOT_LEDGER_OPEN_FAILED") from None
         try:
             self._db.execute("PRAGMA busy_timeout=5000")
             self._db.execute("PRAGMA journal_mode=WAL")
             self._db.execute("PRAGMA synchronous=FULL")
-            if existed:
-                # Do not initialise or rearm ANY existing file, including
-                # an incomplete previous run or another trading database.
-                raise PilotLedgerError("PILOT_LEDGER_ALREADY_EXISTS_MANUAL_REVIEW")
             self._db.execute(
                 "CREATE TABLE pilot_budget (id INTEGER PRIMARY KEY CHECK(id=1), "
                 "owner TEXT NOT NULL, mode TEXT NOT NULL, state TEXT NOT NULL, "
