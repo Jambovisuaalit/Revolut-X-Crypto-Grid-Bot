@@ -15,6 +15,10 @@ strategy and has no authenticated trading API method.
 * SQLite WAL FULL durability, one owner lease, raw 50-level order books,
   retained closed candles, pair rule versions, error logs, sha256 provenance.
 * No automatic row deletion: keep >=45 days, plan disk accordingly.
+* Every-minute monitoring computes rolling 24h metrics and verifies the
+  latest 5,000 hash-linked observations. This is a **tail audit**, not full
+  historical verification; a separate daily full-audit systemd timer checks
+  the complete chain and writes `integrity.json`.
 * `health` is independently read-only and checks 24h coverage >=99%,
   valid ratio >=99%, source age p95 <=1.5 s, current book <=15 s, gaps <=15 s,
   pair active/no drift, 200+ candles and free disk >=256MB.
@@ -44,9 +48,12 @@ and enough disk capacity for potentially hundreds of MB/month.
 sudo install -m 0644 deploy/eth-eur-collector.service /etc/systemd/system/
 sudo install -m 0644 deploy/eth-eur-collector-health.service /etc/systemd/system/
 sudo install -m 0644 deploy/eth-eur-collector-health.timer /etc/systemd/system/
+sudo install -m 0644 deploy/eth-eur-collector-integrity.service /etc/systemd/system/
+sudo install -m 0644 deploy/eth-eur-collector-integrity.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now eth-eur-collector.service
 sudo systemctl enable --now eth-eur-collector-health.timer
+sudo systemctl enable --now eth-eur-collector-integrity.timer
 sudo systemctl status eth-eur-collector.service
 sudo cat /var/lib/revx-eth-eur/health.json
 ```
