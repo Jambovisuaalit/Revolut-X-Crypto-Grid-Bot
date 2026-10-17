@@ -230,12 +230,17 @@ class GridExecutor:
                 return {"dry_run": True, "payload": payload}
             self.connection.execute("BEGIN IMMEDIATE")
             try:
+                # Exclude replaced order from aggregate reserves only inside the
+                # DB transaction. Rollback restores the parent if checks fail.
+                self.connection.execute(
+                    "UPDATE order_lineage SET status='replaced' WHERE venue_order_id=?",
+                    (venue_order_id,),
+                )
+                self._assert_funding(order, free_balances)
                 self.connection.execute(
                     "UPDATE order_lineage SET status='replace_uncertain' WHERE venue_order_id=?",
                     (venue_order_id,),
                 )
-                # Replacement is atomic at the venue: exclude the parent reservation here.
-                self._assert_funding(order, free_balances)
                 self.connection.execute(
                     "INSERT INTO order_lineage "
                     "(client_order_id,parent_venue_order_id,root_client_order_id,symbol,side,price,"
