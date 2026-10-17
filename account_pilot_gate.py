@@ -16,6 +16,8 @@ from urllib.parse import urlsplit, parse_qs
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from pilot_budget_store import DurablePilotLedger, PilotLedgerError
+
 from account_readonly import (
     AccountReadError, AccountSnapshot, AccountTransport,
     AuthenticatedAccountReader, BALANCES, ACTIVE, HISTORY, ReadLimits,
@@ -49,12 +51,14 @@ class GuardedGetTransport:
     Refuses reuse after transport error, budget exhaustion, or manual halt.
     """
 
-    def __init__(self, inner: AccountTransport, *, max_attempts: int = 25) -> None:
+    def __init__(self, inner: AccountTransport, *, max_attempts: int = 25,
+                 ledger: DurablePilotLedger | None = None) -> None:
         if inner is None or not callable(getattr(inner, "get", None)):
             raise TypeError("EXPLICIT_GET_TRANSPORT_REQUIRED")
         if type(max_attempts) is not int or not 1 <= max_attempts <= 25:
             raise ValueError("GET_BUDGET_INVALID")
         self._inner = inner
+        self._ledger = ledger
         self._max_attempts = max_attempts
         self._lock = threading.Lock()
         self._attempts = 0
@@ -73,6 +77,12 @@ class GuardedGetTransport:
     def halt(self) -> None:
         with self._lock:
             self._blocked = True
+            if self._ledger is not None:
+                try:
+                    self._ledger.seal()
+                except Exception:
+                    # The session cannot resume if persistence is uncertain.
+                    pass
 
     @staticmethod
     def _check_url(url: str) -> None:
@@ -127,6 +137,12 @@ class GuardedGetTransport:
             if self._attempts >= self._max_attempts:
                 self._blocked = True
                 raise PilotGateError("PILOT_GET_BUDGET_EXHAUSTED")
+            if self._ledger is not None:
+                try:
+                    self._ledger.reserve_before_get()
+                except Exception:
+                    self._blocked = True
+                    raise PilotGateError("PILOT_DURABLE_BUDGET_BLOCKED") from None
             self._attempts += 1  # before network, even for timeout/429
             try:
                 # Serialize the *entire* GET call. This guarantees that two
@@ -149,10 +165,12 @@ class BoundedPilotSession:
         transport: AccountTransport,
         bounds: PilotBounds = PilotBounds(),
         clock_ms: Callable[[], int] | None = None,
+        ledger: DurablePilotLedger | None = None,
     ) -> None:
         if not isinstance(bounds, PilotBounds):
             raise TypeError("PILOT_BOUNDS_INVALID")
-        self.guard = GuardedGetTransport(transport, max_attempts=bounds.max_attempts)
+        self.guard = GuardedGetTransport(transport, max_attempts=bounds.max_attempts,
+                                         ledger=ledger)
         self.reader = AuthenticatedAccountReader(
             api_key, private_key, transport=self.guard, clock_ms=clock_ms,
             read_limits=ReadLimits(max_pages_per_list=bounds.max_pages_per_list,
