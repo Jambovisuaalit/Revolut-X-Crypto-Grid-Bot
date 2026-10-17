@@ -161,7 +161,7 @@ class Journal:
             "mode": "SHADOW_ONLY", "run_id": self.run_id, "config_hash": self.cfg.sha256,
             "pair": "ETH-EUR", "pair_metadata_source": self.rules.source,
             "data_provenance": "SYNTHETIC_FIXTURE_ONLY" if self.rules.source == "synthetic_fixture"
-                               else "UNVERIFIED",
+                               else "PUBLIC_CAPTURE_REPLAY_SOURCE_NOT_AUTHENTICATED",
             "initial_equity_eur": str(self.cfg["initial_cash_eur"]),
             "final_equity_eur": state["last_equity"],
             "simulated_total_pnl_eur": str(
@@ -174,7 +174,8 @@ class Journal:
             "risk_state": state["status"], "hard_stop_triggered": state["status"] == "STOPPED",
             "historical_30d_replay": "BLOCKED_NO_AUTHENTICATED_ORDERBOOK_HISTORY",
             "forward_shadow_30d": "NOT_RUN", "benchmark_40_60": "NOT_MEASURED",
-            "acceptance": "NO_GO_SYNTHETIC_ONLY", "real_mutation_requests": 0,
+            "acceptance": ("NO_GO_SYNTHETIC_ONLY" if self.rules.source == "synthetic_fixture"
+                           else "NO_GO_INSUFFICIENT_REAL_SAMPLE"), "real_mutation_requests": 0,
             **integrity,
         }
 
