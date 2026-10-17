@@ -15,6 +15,8 @@ def main() -> None:
         "pair_metadata_source": "synthetic_fixture",
         "data_provenance": "SYNTHETIC_FIXTURE_ONLY",
         "audit_integrity": "PASS", "exchange_orders": 0,
+        "config_hash": "4f4d337ed15e5b88e1e979015acfab60c2a34fa87f177a2be97b2064d7de8c33",
+        "last_hash": "27cca6b2600a76486b8ba0bf6fe5a6ac7c359c3d56944525bef39c7c1dd41ad8",
         "real_mutation_requests": 0, "closed_cycles": 1,
         "synthetic_fills": 2, "observations": 5,
         "forward_shadow_30d": "NOT_RUN", "acceptance": "NO_GO_SYNTHETIC_ONLY",
