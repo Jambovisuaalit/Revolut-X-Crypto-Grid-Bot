@@ -30,7 +30,7 @@ class OrderRequest:
 class GridExecutor:
     """Write intent before a mutation, never replay it, adopt only verified venue state."""
 
-    ACTIVE_STATUSES = frozenset({"pending_new", "pending_replace", "new", "partially_filled", "replace_uncertain"})
+    ACTIVE_STATUSES = frozenset({"pending_new", "pending_replace", "venue_pending", "new", "partially_filled", "replace_uncertain"})
     TERMINAL_STATUSES = frozenset({"filled", "cancelled", "rejected", "replaced"})
     KNOWN_STATUSES = ACTIVE_STATUSES | TERMINAL_STATUSES
 
@@ -186,7 +186,7 @@ class GridExecutor:
                 self.connection.execute(
                     "UPDATE order_lineage SET venue_order_id=?,status=?,updated_at=CURRENT_TIMESTAMP "
                     "WHERE client_order_id=?",
-                    (result["venue_order_id"], result["state"], client_order_id),
+                    (result["venue_order_id"], "venue_pending" if result["state"] == "pending_new" else result["state"], client_order_id),
                 )
                 return result
             except Exception:
@@ -203,7 +203,7 @@ class GridExecutor:
             parent = self.connection.execute(
                 "SELECT * FROM order_lineage WHERE venue_order_id=?", (venue_order_id,)
             ).fetchone()
-            if parent is None or parent["status"] not in {"new", "partially_filled"}:
+            if parent is None or parent["status"] not in {"new", "partially_filled", "venue_pending"}:
                 raise ReconciliationError("only known active orders may be replaced")
             child_id = client_order_id or str(uuid.uuid4())
             order = self._validated_order(
@@ -225,6 +225,7 @@ class GridExecutor:
                     (venue_order_id,),
                 )
                 # Replacement is atomic at the venue: exclude the parent reservation here.
+                self._assert_funding(order, free_balances)
                 self.connection.execute(
                     "INSERT INTO order_lineage "
                     "(client_order_id,parent_venue_order_id,root_client_order_id,symbol,side,price,"
@@ -232,16 +233,6 @@ class GridExecutor:
                     (child_id, venue_order_id, parent["root_client_order_id"], order.symbol,
                      order.side, decimal_text(order.price), decimal_text(order.quantity),
                      decimal_text(order.quantity), parent["version"] + 1),
-                )
-                # Temporarily exclude parent from funding computation, without losing its persisted identity.
-                self.connection.execute(
-                    "UPDATE order_lineage SET status='replaced' WHERE venue_order_id=?",
-                    (venue_order_id,),
-                )
-                self._assert_funding(order, free_balances)
-                self.connection.execute(
-                    "UPDATE order_lineage SET status='replace_uncertain' WHERE venue_order_id=?",
-                    (venue_order_id,),
                 )
                 self.connection.execute("COMMIT")
             except Exception:
@@ -257,7 +248,7 @@ class GridExecutor:
                 )
                 self.connection.execute(
                     "UPDATE order_lineage SET venue_order_id=?,status=? WHERE client_order_id=?",
-                    (result["venue_order_id"], result["state"], child_id),
+                    (result["venue_order_id"], "venue_pending" if result["state"] == "pending_new" else result["state"], child_id),
                 )
                 self.connection.execute("COMMIT")
                 return result
@@ -313,7 +304,7 @@ class GridExecutor:
             if len(active_by_id) != len(active):
                 raise ReconciliationError("duplicate active venue identifiers")
             need_history = bool(pending or any(
-                row["status"] in {"new", "partially_filled"} and row["venue_order_id"] not in active_by_id
+                row["status"] in {"new", "partially_filled", "venue_pending"} and row["venue_order_id"] not in active_by_id
                 for row in rows
             ))
             historical = self.client.get_historical_orders() if need_history else []
@@ -346,7 +337,7 @@ class GridExecutor:
                     self.connection.execute(
                         "UPDATE order_lineage SET venue_order_id=?,status=?,filled_quantity=?,"
                         "leaves_quantity=?,updated_at=CURRENT_TIMESTAMP WHERE client_order_id=?",
-                        (item["id"], status, decimal_text(filled), decimal_text(leaves), row["client_order_id"]),
+                        (item["id"], "venue_pending" if status == "pending_new" else status, decimal_text(filled), decimal_text(leaves), row["client_order_id"]),
                     )
                     if filled > 0:
                         self.reconcile_fills(item["id"])
@@ -358,7 +349,7 @@ class GridExecutor:
                 if any(vid not in local_by_id for vid in active_by_id):
                     raise ReconciliationError("untracked venue order exists")
                 for row in rows:
-                    if row["status"] not in {"new", "partially_filled", "pending_new"}:
+                    if row["status"] not in {"new", "partially_filled", "venue_pending"}:
                         continue
                     vid = row["venue_order_id"]
                     item = active_by_id.get(vid) or history_by_id.get(vid)
@@ -369,7 +360,7 @@ class GridExecutor:
                     self.connection.execute(
                         "UPDATE order_lineage SET status=?,filled_quantity=?,leaves_quantity=?,"
                         "updated_at=CURRENT_TIMESTAMP WHERE venue_order_id=?",
-                        (status, decimal_text(filled), decimal_text(leaves), vid),
+                        ("venue_pending" if status == "pending_new" else status, decimal_text(filled), decimal_text(leaves), vid),
                     )
                     if filled > 0:
                         self.reconcile_fills(vid)
@@ -377,7 +368,7 @@ class GridExecutor:
                     row = self.connection.execute(
                         "SELECT status FROM order_lineage WHERE venue_order_id=?", (vid,)
                     ).fetchone()
-                    if not row or row["status"] not in {"new", "partially_filled"}:
+                    if not row or row["status"] not in {"new", "partially_filled", "venue_pending"}:
                         raise ReconciliationError("unverified active order/status mismatch")
                 self.connection.execute("COMMIT")
                 self.reconciled = True
