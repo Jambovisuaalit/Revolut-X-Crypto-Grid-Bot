@@ -162,6 +162,14 @@ jobs:
         with:
           python-version: '3.11'
       - run: python -m pip install -r requirements.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build React assets for source-only GUI smoke
+        working-directory: frontend
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
       - run: python -m compileall -q product_shell windows_distribution eth_shadow_v1 tests
       - run: python -m unittest discover -s tests -v
       - run: python -m unittest tests.test_grid_console_desktop_gui -v
