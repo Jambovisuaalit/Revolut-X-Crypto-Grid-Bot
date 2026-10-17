@@ -274,7 +274,9 @@ def transition(current: dict, event: dict, cfg: Config,
                         qty, total, fee = buy_math(buy, cfg, rules)
                         cost_basis = sum((D(x["cost"]) for x in state["lots"].values()
                                          if x["status"] == "OPEN_LOT"), D(0))
-                        if (qty <= 0 or total < rules.min_notional
+                        if (qty <= 0 or (rules.min_base_qty > 0 and qty < rules.min_base_qty)
+                                or (rules.max_base_qty > 0 and qty > rules.max_base_qty)
+                                or total < rules.min_notional
                                 or total > rules.max_notional or total > D(state["cash"])
                                 or cost_basis + total > cfg["max_cost_basis_eur"]):
                             state["rejected_signals"] += 1

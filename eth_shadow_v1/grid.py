@@ -28,6 +28,8 @@ class PairRules:
     min_notional: Decimal
     max_notional: Decimal
     source: str
+    min_base_qty: Decimal = D("0")
+    max_base_qty: Decimal = D("0")
 
     @classmethod
     def from_dict(cls, raw: dict) -> "PairRules":
@@ -46,6 +48,41 @@ class PairRules:
             # An authenticated/live adapter is deliberately not provided by v1.
             raise ValueError("v1 offline runner accepts synthetic pair metadata only")
         return result
+
+    @classmethod
+    def from_public_config(cls, response: dict, *, resolved_region: str,
+                           book_mid: Decimal) -> "PairRules":
+        """Validate the *current* public pair object, never docs example values.
+
+        Revolut returns configuration keyed 'ETH/EUR' (slash), while
+        public order-book URLs use 'ETH-EUR' (hyphen).
+        """
+        if resolved_region != "EEA" or not isinstance(response, dict):
+            raise ValueError("PUBLIC_PAIR_REGION_UNVERIFIED")
+        pair = response.get("ETH/EUR")
+        if not isinstance(pair, dict) or pair.get("base") != "ETH" or pair.get("quote") != "EUR":
+            raise ValueError("ETH_EUR_PAIR_MISSING_OR_MISMATCH")
+        fields = ("base_step", "quote_step", "min_order_size",
+                  "max_order_size", "min_order_size_quote")
+        if any(key not in pair for key in fields):
+            raise ValueError("PUBLIC_PAIR_MISSING_PRECISION_FIELDS")
+        sizes = {key: number(pair[key], key) for key in fields}
+        if any(value <= 0 for value in sizes.values()) or not book_mid.is_finite() or book_mid <= 0:
+            raise ValueError("PUBLIC_PAIR_INVALID_PRECISION")
+        if sizes["max_order_size"] < sizes["min_order_size"]:
+            raise ValueError("PUBLIC_PAIR_INVERTED_ORDER_BOUNDS")
+        status = pair.get("status")
+        if status not in ("active", "inactive", "halted", "suspended"):
+            raise ValueError("PUBLIC_PAIR_UNRECOGNISED_STATUS")
+        return cls(
+            status=status, region="EEA", symbol="ETH-EUR",
+            base_step=sizes["base_step"], quote_step=sizes["quote_step"],
+            min_notional=sizes["min_order_size_quote"],
+            max_notional=sizes["max_order_size"] * book_mid,
+            min_base_qty=sizes["min_order_size"],
+            max_base_qty=sizes["max_order_size"],
+            source="revolut_public_configuration",
+        )
 
     def active(self) -> bool:
         return self.status == "active" and self.region == "EEA" and self.symbol == "ETH-EUR"
