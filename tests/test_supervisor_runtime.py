@@ -177,6 +177,7 @@ class OfflineSupervisorTests(unittest.TestCase):
                     self.executor.close()
                     self.path=Path(self.temp.name)/("offline-"+raw+".sqlite")
                     self.executor=GridExecutor(self.venue,{},database_path=str(self.path),live_trading=False)
+                    self.addCleanup(self.executor.close)
                 result=self.make(feed).run_bounded(1)
                 self.assertEqual(result["state"],"BLOCKED")
                 self.assertEqual(self.venue.mutations,0)
