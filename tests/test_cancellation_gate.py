@@ -14,18 +14,20 @@ class Venue:
         self.active = [] if active is None else active
         self.error = error
         self.cancel_calls = 0
+        self.cancel_attempted = False
         self.post_calls = 0
 
     def get_open_orders(self):
         if self.error:
             raise self.error
-        return self.active
+        return self.active if self.cancel_attempted else []
 
     def get_historical_orders(self):
         return []
 
     def cancel_all_orders(self):
         self.cancel_calls += 1
+        self.cancel_attempted = True
 
     def place_order(self, payload):
         self.post_calls += 1
@@ -87,6 +89,7 @@ class CancellationGateTests(unittest.TestCase):
         venue = Venue()
         def fail():
             venue.cancel_calls += 1
+            venue.cancel_attempted = True
             raise TimeoutError("DELETE acknowledgement lost")
         venue.cancel_all_orders = fail
         exe = self.make(venue)
