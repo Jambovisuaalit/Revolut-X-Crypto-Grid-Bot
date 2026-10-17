@@ -1,0 +1,59 @@
+name: Unified Grid Console Product - Offline Integration Gate
+on:
+  push:
+    branches: [integration/grid-console-one-product-v1]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  full-unified-test:
+    name: product-offline-unified (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    env:
+      LIVE_TRADING: 'false'
+      DRY_RUN: 'true'
+      ACCOUNT_NETWORK_TESTS: 'DISABLED'
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r requirements.txt
+      - name: Verify combined Python tree compiles
+        run: python -m compileall -q .
+      - name: Full combined suite — no account/API keys in runner
+        run: python -m unittest discover -s tests -v
+      - name: Local Finnish Grid Console route and write-denial tests
+        run: python -m unittest tests.test_grid_console_v0 -v
+      - name: Offline ETH/EUR strategy test suite
+        run: python -m unittest tests.test_eth_shadow_v1 -v
+      - name: Local product commercial NO_GO release report
+        run: python scripts/check_grid_console_release_gate.py --output product-integration-artifacts/product-no-go.json
+      - name: Windows DPAPI certificate vault no-account test
+        run: python -m unittest tests.test_windows_key_vault -v
+      - name: Process crash and recovery original mock integration
+        run: python scripts/process_recovery_integration.py
+      - name: Equity drawdown existing mock integration
+        run: python scripts/drawdown_integration.py
+      - name: Verify strict recovery counters and cleanup
+        run: python scripts/check_pr3_recovery_gate.py --report-dir recovery-artifacts --commit-sha ${{ github.sha }}
+      - name: Run bounded safe desktop console release-gate verifier
+        run: python scripts/check_bounded_account_pilot.py --commit-sha ${{ github.sha }} --output product-integration-artifacts/read-only-no-go.json
+      - name: Upload redacted safety evidence even on failure
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unified-offline-product-${{ matrix.os }}
+          path: |
+            product-integration-artifacts/*.json
+            recovery-artifacts/*.json
+          if-no-files-found: warn
