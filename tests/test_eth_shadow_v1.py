@@ -245,5 +245,39 @@ class ShadowGridV1Tests(unittest.TestCase):
         self.assertEqual(self.state["synthetic_fills"], 2)
 
 
+    def test_RISK_03_exact_970_eur_floor(self) -> None:
+        self.step(self.events[0])
+        self.state["cash"] = "970"
+        decision = self.step(self.events[1])
+        self.assertEqual(decision["action"], "HARD_STOP")
+        self.assertEqual(decision["status"], "STOPPED")
+        self.assertEqual(D(self.state["cash"]), D("970"))
+
+    def test_COST_02_double_slippage_stress_is_separate(self) -> None:
+        from eth_shadow_v1.grid import sell_math
+        stress = replace(self.cfg, values={
+            **self.cfg.values, "slippage_rate": D("0.0010")
+        }, sha256="stress-test-only")
+        qty, total, _ = buy_math(D("2977.50"), stress, self.rules)
+        _, proceeds, _ = sell_math(qty, D("3000"), stress)
+        self.assertGreater(proceeds-total, D(0))
+        self.assertLess(proceeds-total, D("0.5"))
+        self.assertEqual(self.cfg["slippage_rate"], D("0.0005"))
+
+    def test_REC_02_two_connections_event_idempotency(self) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+        with tempfile.TemporaryDirectory() as folder:
+            location = Path(folder) / "state.sqlite"
+            def worker() -> dict:
+                with Journal(location, "concurrent", self.cfg, self.rules) as j:
+                    return j.process(self.events[0])
+            with ThreadPoolExecutor(max_workers=2) as ex:
+                answers = list(ex.map(lambda _: worker(), range(2)))
+            self.assertEqual(answers[0], answers[1])
+            with Journal(location, "concurrent", self.cfg, self.rules) as j:
+                self.assertEqual(j.verify()["observations"], 1)
+                self.assertEqual(j.verify()["synthetic_fills"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()
