@@ -59,6 +59,12 @@ class FakeClient:
     def get_fills(self, venue_order_id):
         return list(self.fills)
 
+    def get_order(self, venue_order_id):
+        for row in self.active + self.history:
+            if row["id"] == venue_order_id:
+                return dict(row)
+        raise ApiError("venue order was not found")
+
     def place_order(self, payload):
         self.placed.append(payload)
         new_id = uid()
@@ -73,6 +79,7 @@ class FakeClient:
         self.replaced.append(payload)
         parent_row = next(x for x in self.active if x["id"] == venue_order_id)
         self.active = [x for x in self.active if x["id"] != venue_order_id]
+        self.history.append(dict(parent_row, status="replaced"))
         new_id = uid()
         self.active.append(venue(payload["client_order_id"], new_id, side=parent_row["side"],
                                  price=payload["price"], quantity=payload["base_size"],
