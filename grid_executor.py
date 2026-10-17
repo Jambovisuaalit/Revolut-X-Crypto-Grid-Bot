@@ -513,17 +513,33 @@ class GridExecutor:
                     if len(candidates) != 1:
                         raise ReconciliationError("pending mutation not uniquely verified; manual review required")
                     item = candidates[0]
-                    self._order_identity(row, item)
-                    status, filled, leaves = self._order_status(item)
+                    parent = None
                     if row["status"] == "pending_replace":
                         parent_id = row["parent_venue_order_id"]
-                        if (not parent_id or parent_id == item["id"]
-                                or item.get("previous_order_id") != parent_id):
-                            raise ReconciliationError("unverified replacement parent linkage")
-                        if parent_id in active_by_id:
-                            raise ReconciliationError("parent and replacement both active; manual review required")
+                        if not parent_id or parent_id == item["id"] or parent_id in active_by_id:
+                            raise ReconciliationError("replacement parent/child identity uncertain")
+                        parent = self.connection.execute(
+                            "SELECT * FROM order_lineage WHERE venue_order_id=? AND status='replace_uncertain'",
+                            (parent_id,),
+                        ).fetchone()
+                        if (parent is None
+                                or parent["root_client_order_id"] != row["root_client_order_id"]
+                                or parent["version"] + 1 != row["version"]):
+                            raise ReconciliationError("persisted replacement chain does not match parent")
+                    # Authoritative GET independently checks all immutable
+                    # order fields and the terminal parent for a replacement.
+                    # This does not assume undocumented previous_order_id exists.
+                    status, filled, leaves = self._confirm_mutation(
+                        row, {
+                            "client_order_id": row["client_order_id"],
+                            "venue_order_id": item["id"],
+                            "state": item["status"],
+                        }, parent=parent
+                    )
+                    if parent is not None:
                         self.connection.execute(
-                            "UPDATE order_lineage SET status='replaced' WHERE venue_order_id=?", (parent_id,)
+                            "UPDATE order_lineage SET status='replaced' WHERE venue_order_id=?",
+                            (parent["venue_order_id"],),
                         )
                     self.connection.execute(
                         "UPDATE order_lineage SET venue_order_id=?,status=?,filled_quantity=?,"
