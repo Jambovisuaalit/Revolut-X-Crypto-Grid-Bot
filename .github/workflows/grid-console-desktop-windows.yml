@@ -1,0 +1,142 @@
+name: Grid Console Desktop Windows - Offline Installer Safety
+on:
+  push:
+    branches: [feat/grid-console-desktop-windows-ui-v1]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows-graphical-installer:
+    name: windows-gui-installer-unsigned-development
+    runs-on: windows-latest
+    timeout-minutes: 35
+    env:
+      LIVE_TRADING: 'false'
+      DRY_RUN: 'true'
+      ACCOUNT_NETWORK_TESTS: 'DISABLED'
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Python and Inno Setup build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install -r requirements.txt 'pyinstaller==6.16.0'
+          if ($LASTEXITCODE -ne 0) { throw 'PYTHON_INSTALL_FAILED' }
+          choco install innosetup -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'INNO_SETUP_INSTALL_FAILED' }
+      - name: Compile existing GUI and trading safety sources
+        run: python -m compileall -q product_shell eth_shadow_v1 windows_distribution tests
+      - name: Complete combined offline regression matrix
+        run: python -m unittest discover -s tests -v
+      - name: Dedicated graphical entrypoint contract tests
+        run: python -m unittest tests.test_grid_console_desktop_gui -v
+      - name: Create real GUI EXE and per-user unsigned installer
+        shell: pwsh
+        run: ./windows_distribution/build_grid_console_desktop.ps1
+      - name: Silent install and verify installed GUI EXE self-test
+        shell: pwsh
+        run: |
+          $setup=(Resolve-Path 'installer-dist/GridConsoleDesktop-UNSIGNED-DEV-Setup.exe').Path
+          $target=Join-Path $env:RUNNER_TEMP 'grid-console-desktop-installed'
+          $p=Start-Process -FilePath $setup -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',("/DIR="+$target)) -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw 'GUI_INSTALL_FAILED' }
+          $exe=Join-Path $target 'GridConsoleDesktop.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { throw 'INSTALLED_GUI_BINARY_MISSING' }
+          $out=Join-Path (Get-Location) 'windows-artifacts/installed-gui-smoke.json'
+          $probe=Start-Process -FilePath $exe -ArgumentList @('--self-test','--report',$out) -Wait -PassThru
+          if ($probe.ExitCode -ne 0) { throw 'INSTALLED_GUI_SELF_TEST_FAILED' }
+          $report=Get-Content -LiteralPath $out -Raw | ConvertFrom-Json
+          if ($report.status -ne 'DEV_DESKTOP_PASS' -or
+              $report.local_assets -ne 'VERIFIED' -or
+              $report.http_bind -ne '127.0.0.1' -or
+              $report.account_connection -ne 'NOT_CONNECTED' -or
+              $report.live_orders -ne 'DISABLED' -or
+              $report.exchange_mutations -ne 0 -or
+              $report.sellable_product -ne 'NO_GO') { throw 'INSTALLED_GUI_UNSAFE' }
+      - name: Verify graphical window opens and closes without browser
+        shell: pwsh
+        run: |
+          $exe=Join-Path $env:RUNNER_TEMP 'grid-console-desktop-installed/GridConsoleDesktop.exe'
+          $process=Start-Process -FilePath $exe -ArgumentList @('--no-auto-browser') -PassThru
+          try {
+            $handle=[IntPtr]::Zero
+            for($i=0; $i -lt 25; $i++){
+              Start-Sleep -Milliseconds 400
+              $process.Refresh()
+              if($process.HasExited){ throw 'GUI_EXITED_EARLY' }
+              $handle=$process.MainWindowHandle
+              if($handle -ne [IntPtr]::Zero){ break }
+            }
+            if($handle -eq [IntPtr]::Zero){ throw 'GUI_WINDOW_NOT_VISIBLE' }
+            Add-Type -Namespace Native -Name User32 -MemberDefinition '[DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);'
+            if(-not [Native.User32]::PostMessage($handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)){
+              throw 'GUI_CLOSE_SIGNAL_FAILED'
+            }
+            if(-not $process.WaitForExit(10000)){ throw 'GUI_DID_NOT_CLOSE' }
+            if($process.ExitCode -ne 0){ throw 'GUI_UNEXPECTED_EXIT' }
+          } finally {
+            if(-not $process.HasExited){ Stop-Process -Id $process.Id -Force }
+          }
+      - name: Verify development unsigned status, SHA256 and negative release gate
+        shell: pwsh
+        run: |
+          $exe='dist/GridConsoleDesktop/GridConsoleDesktop.exe'
+          $setup='installer-dist/GridConsoleDesktop-UNSIGNED-DEV-Setup.exe'
+          ./windows_distribution/Test-WindowsDevBundle.ps1 -PreviewExe $exe -InstallerExe $setup -CommitSha '${{ github.sha }}' -Output 'windows-artifacts/gui-dev-manifest.json'
+          foreach($item in @(@('gui',$exe),@('installer',$setup))){
+            $out='windows-artifacts/'+$item[0]+'-signer-denied.json'
+            $sha=(Get-FileHash -LiteralPath $item[1] -Algorithm SHA256).Hash
+            & ./windows_distribution/Verify-WindowsRelease.ps1 -FilePath $item[1] -ExpectedSha256 $sha -ExpectedSignerThumbprint ('A'*40) -ReportPath $out
+            if($LASTEXITCODE -eq 0){ throw 'UNSIGNED_GUI_WAS_ACCEPTED' }
+            $v=Get-Content -LiteralPath $out -Raw | ConvertFrom-Json
+            if($v.status -ne 'FAIL' -or $v.release_approval -ne 'NO_GO'){
+              throw 'SIGNATURE_FAILURE_EVIDENCE_MISSING'
+            }
+          }
+          $global:LASTEXITCODE=0
+      - name: Create downloadable developer portable ZIP
+        shell: pwsh
+        run: |
+          Compress-Archive -Path 'dist/GridConsoleDesktop' -DestinationPath 'windows-artifacts/GridConsoleDesktop-UNSIGNED-DEV-Portable.zip' -Force
+      - name: Existing crash and risk integration
+        run: |
+          python scripts/process_recovery_integration.py
+          python scripts/drawdown_integration.py
+          python scripts/check_pr3_recovery_gate.py --report-dir recovery-artifacts --commit-sha ${{ github.sha }}
+      - name: Developer artifacts — NOT for customer installation
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: GRID-CONSOLE-DESKTOP-WINDOWS-UNSIGNED-DEVELOPMENT-NO-LIVE
+          path: |
+            installer-dist/GridConsoleDesktop-UNSIGNED-DEV-Setup.exe
+            windows-artifacts/*.json
+            windows-artifacts/*.zip
+            recovery-artifacts/*.json
+          if-no-files-found: warn
+  ubuntu-crossplatform-regression:
+    name: linux-gui-source-offline-risk-regressions
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      LIVE_TRADING: 'false'
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r requirements.txt
+      - run: python -m compileall -q product_shell windows_distribution eth_shadow_v1 tests
+      - run: python -m unittest discover -s tests -v
+      - run: python -m unittest tests.test_grid_console_desktop_gui -v
+      - run: python windows_distribution/grid_console_desktop.py --self-test --report grid-desktop-test/linux-report.json
+      - run: python scripts/check_grid_console_release_gate.py --output grid-desktop-test/release-no-go.json
