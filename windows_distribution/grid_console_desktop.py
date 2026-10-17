@@ -52,10 +52,12 @@ def check_status(payload: dict[str, Any]) -> None:
         raise RuntimeError("STRATEGY_MUST_REMAIN_STOPPED")
 
 
-def status_through_loopback(supervisor_db: Path | None = None) -> dict[str, Any]:
+def status_through_loopback(supervisor_db: Path | None = None, *,
+                            react_root: Path | None = None) -> dict[str, Any]:
     """Exercise existing HTTP route, including forbidden HTTP mutations."""
     assert_safe_env()
-    with local_server(None, 0, supervisor_db=supervisor_db, ui="react") as server:
+    with local_server(None, 0, supervisor_db=supervisor_db, ui="react",
+                      react_root=react_root) as server:
         thread = Thread(target=server.serve_forever, daemon=True, name="grid-console-test-http")
         thread.start()
         try:
