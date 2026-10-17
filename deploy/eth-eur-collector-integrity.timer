@@ -1,0 +1,10 @@
+[Unit]
+Description=Verify complete ETH/EUR raw-book audit history daily
+
+[Timer]
+OnCalendar=*-*-* 04:00:00 UTC
+Persistent=true
+Unit=eth-eur-collector-integrity.service
+
+[Install]
+WantedBy=timers.target

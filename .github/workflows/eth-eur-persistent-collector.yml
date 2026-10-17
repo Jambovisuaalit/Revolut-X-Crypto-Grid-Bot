@@ -1,0 +1,58 @@
+name: ETH EUR Persistent Read-only Collector - Test Gate
+on:
+  push:
+    branches: [feat/eth-eur-persistent-readonly-collector]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  collector-offline:
+    name: collector-offline (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      LIVE_TRADING: 'false'
+      DRY_RUN: 'true'
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r requirements.txt
+      - run: python -m compileall -q eth_shadow_v1 scripts/eth_eur_persistent_collector.py tests
+      - name: Persistent collector risk/data quality and historical regression suite
+        run: python -m unittest discover -s tests -v
+      - name: Offline SQLite audit tamper check
+        run: python -m unittest tests.test_eth_persistent_collector -v
+  bounded-public-get:
+    name: Bounded real public GET smoke (not an always-on deployment)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      LIVE_TRADING: 'false'
+      DRY_RUN: 'true'
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r requirements.txt
+      - name: Exactly 3 read-only book polls in local durable SQLite
+        run: python scripts/eth_eur_persistent_collector.py run --db collector-artifacts/books.sqlite --max-polls 3 --report collector-artifacts/health.json
+      - name: Verify 3 public snapshots, raw audit, still under 24h gate
+        run: python scripts/check_eth_collector_smoke.py collector-artifacts/health.json
+      - name: Preserve bounded capture evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bounded-eth-eur-collector-smoke
+          path: |
+            collector-artifacts/health.json
+          if-no-files-found: error
