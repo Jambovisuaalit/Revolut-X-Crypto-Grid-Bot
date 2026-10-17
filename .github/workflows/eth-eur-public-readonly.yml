@@ -1,0 +1,55 @@
+name: ETH EUR One-Shot Public Market Data Capture
+on:
+  push:
+    branches:
+      - feat/eth-eur-public-readonly
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  offline-contracts:
+    name: Public data adapter tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    timeout-minutes: 10
+    env:
+      LIVE_TRADING: 'false'
+      DRY_RUN: 'true'
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r requirements.txt
+      - run: python -m compileall -q eth_shadow_v1 scripts/capture_eth_eur_public_once.py tests
+      - run: python -m unittest discover -s tests -v
+  live-public-one-shot:
+    name: Public GETs only (one bounded capture)
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      LIVE_TRADING: 'false'
+      DRY_RUN: 'true'
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install requests
+      - name: Capture 3 public ETH/EUR books + public pairs + 15m candle history
+        # Failed public GET is a visible failed job, never a false PASS.
+        run: python scripts/capture_eth_eur_public_once.py --samples 3 --capture public-data/capture.json --report public-data/report.json
+      - name: Upload evidence regardless of status
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eth-eur-public-capture
+          path: |
+            public-data/capture.json
+            public-data/report.json
+          if-no-files-found: warn
