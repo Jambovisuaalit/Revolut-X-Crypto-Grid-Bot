@@ -39,12 +39,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("command", choices=["run", "health"])
     parser.add_argument("--db", required=True, type=Path)
     parser.add_argument("--report", type=Path)
+    parser.add_argument("--full-audit", action="store_true", help="verify all historical hashes, not just last 5000")
     parser.add_argument("--max-polls", type=int, default=0,
                         help="Nonzero for bounded smoke only; 0 means run until stopped")
     args = parser.parse_args(argv)
     if args.command == "health":
         from time import time_ns
-        report = evaluate_quality(args.db, time_ns() // 1_000_000)
+        report = evaluate_quality(args.db, time_ns() // 1_000_000, full_audit=args.full_audit)
         if args.report:
             atomic_json(args.report, report)
         print(json.dumps(report, sort_keys=True))
