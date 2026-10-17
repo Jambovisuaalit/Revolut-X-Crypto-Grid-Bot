@@ -18,7 +18,7 @@ class Venue:
         self.post_calls = 0
 
     def get_open_orders(self):
-        if self.error:
+        if self.error and self.cancel_attempted:
             raise self.error
         return self.active if self.cancel_attempted else []
 
