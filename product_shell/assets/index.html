@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="fi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Grid Console · Turvallinen esikatselu</title>
+<link rel="stylesheet" href="/style.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar" aria-label="Päävalikko">
+    <a class="brand" href="/" aria-label="Grid Console - Etusivu">
+      <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+      <span>GRID<span class="brand-light">CONSOLE</span><small>TRADING CONTROL</small></span>
+    </a>
+    <div class="nav-section">TYÖTILA</div>
+    <nav aria-label="Navigointi">
+      <a class="nav active" href="/" aria-current="page"><span aria-hidden="true">▦</span> Yleisnäkymä</a>
+      <a class="nav disabled" tabindex="-1" aria-disabled="true"><span aria-hidden="true">◫</span> Strategiat <span class="soon">Tulossa</span></a>
+      <a class="nav disabled" tabindex="-1" aria-disabled="true"><span aria-hidden="true">≡</span> Kaupat <span class="soon">Tulossa</span></a>
+      <a class="nav disabled" tabindex="-1" aria-disabled="true"><span aria-hidden="true">⚙</span> Asetukset <span class="soon">Tulossa</span></a>
+    </nav>
+    <div class="sidebar-bottom">
+      <div class="security-note"><span aria-hidden="true">◈</span> <div><b>Paikallinen käyttö</b><small>Tämä näkymä toimii vain omalla laitteella.</small></div></div>
+      <p class="legal">Itsenäinen ohjelmisto. Ei Revolutin tuote tai Revolutin hyväksymä palvelu.</p>
+    </div>
+  </aside>
+
+  <main class="content" id="main">
+    <header class="topbar">
+      <div class="breadcrumbs">TYÖTILA <span>/</span> YLEISNÄKYMÄ</div>
+      <div class="right"><span class="mode-pill"><i aria-hidden="true"></i> SHADOW-ESIKATSELU</span><span class="avatar" aria-hidden="true">GC</span></div>
+    </header>
+    <div class="inner">
+      <section class="page-head">
+        <div><div class="eyebrow">KAUPANKÄYNNIN HALLINTA</div><h1>Yleisnäkymä<span class="dot">.</span></h1>
+          <p>Seuraa järjestelmän toimintaa ja riskirajoja yhdestä paikasta.</p></div>
+        <button class="refresh" id="refresh" type="button"><span aria-hidden="true">↻</span> Päivitä tiedot</button>
+      </section>
+
+      <section class="alert" role="status" aria-label="Turvatila">
+        <div class="alert-icon" aria-hidden="true">●</div>
+        <div><b>Turvallinen esikatselutila on käytössä</b><p>Tämä versio ei yhdistä kaupankäyntitiliä eikä voi lähettää oikeita toimeksiantoja.</p></div>
+        <span class="alert-badge">LIVE ESTETTY</span>
+      </section>
+
+      <section class="metrics" aria-label="Keskeiset tiedot">
+        <article class="metric"><div class="metric-top">Virtuaalinen alkupääoma <span aria-hidden="true">◎</span></div>
+          <div class="metric-value" id="capital">—</div><div class="metric-caption">Vain testitilan oletusarvo</div></article>
+        <article class="metric"><div class="metric-top">Tilin saldo <span aria-hidden="true">◷</span></div>
+          <div class="metric-value">—</div><div class="metric-caption">Ei tililiitäntää</div></article>
+        <article class="metric"><div class="metric-top">Toteutunut tulos <span aria-hidden="true">↗</span></div>
+          <div class="metric-value">—</div><div class="metric-caption">Ei todennettuja kauppoja</div></article>
+        <article class="metric"><div class="metric-top">Avoimet toimeksiannot <span aria-hidden="true">▤</span></div>
+          <div class="metric-value">—</div><div class="metric-caption">Ei tililiitäntää</div></article>
+      </section>
+
+      <div class="two-column">
+        <section class="panel" aria-labelledby="health-title">
+          <div class="panel-head"><div><div class="eyebrow">JÄRJESTELMÄN TILA</div><h2 id="health-title">Yhteydet ja turvallisuus</h2></div><span class="outline-pill">LUKUTILA</span></div>
+          <div class="status-list">
+            <div class="status-row"><span class="status-icon neutral">◉</span><div><b>Revolut X -tiliyhteys</b><small>Vaatii oman API-avaimen ja paikallisen käyttöönoton.</small></div><span class="state off">Ei yhdistetty</span></div>
+            <div class="status-row"><span class="status-icon neutral">▥</span><div><b>Markkinadatan keräin</b><small id="collector-detail">Tarkistetaan paikallista tietokantaa.</small></div><span class="state" id="collector-status">Tarkistetaan</span></div>
+            <div class="status-row"><span class="status-icon safe">⊘</span><div><b>Oikea kaupankäynti</b><small>Automaattisten toimeksiantojen lähetys estetty.</small></div><span class="state good">Estetty</span></div>
+            <div class="status-row"><span class="status-icon neutral">▣</span><div><b>Strategian tila</b><small>ETH/EUR · Grid · Virtuaalinen testipääoma</small></div><span class="state off">Ei käynnissä</span></div>
+          </div>
+        </section>
+        <section class="panel" aria-labelledby="risk-title">
+          <div class="panel-head"><div><div class="eyebrow">RISKINHALLINTA</div><h2 id="risk-title">Strategian suojarajat</h2></div><span class="outline-pill">V1.0</span></div>
+          <div class="risk-main"><div class="risk-label">Virtuaalisen testin tappioraja</div><div class="risk-number" id="loss">—</div><div class="risk-line"><span></span></div><p>Tappioraja ei takaa, että todellinen tappio jäisi vastaavalle tasolle.</p></div>
+          <div class="risk-sub"><div><span>Kokonaispositioraja</span><b id="exposure">—</b></div><div><span>Kaupankäyntitila</span><b class="turquoise">SHADOW</b></div></div>
+        </section>
+      </div>
+
+      <section class="panel onboarding" aria-labelledby="onboard-title">
+        <div class="panel-head"><div><div class="eyebrow">ENSIMMÄISET VAIHEET</div><h2 id="onboard-title">Aloita hallitusti</h2></div><span class="outline-pill">VAIHE 1 / 4</span></div>
+        <div class="steps">
+          <div class="step current"><div class="step-num">01</div><h3>Tarkista laitteesi</h3><p>Asennus ja paikallisen sovelluksen toimivuus.</p><span class="step-label">Tässä vaiheessa</span></div>
+          <div class="step"><div class="step-num">02</div><h3>Yhdistä tilisi</h3><p>API-avainten paikallinen ja turvallinen hallinta.</p><span class="step-label">Ei vielä saatavilla</span></div>
+          <div class="step"><div class="step-num">03</div><h3>Testaa strategia</h3><p>Todellisen datan shadow-validointi ilman oikeita kauppoja.</p><span class="step-label">Ei vielä saatavilla</span></div>
+          <div class="step"><div class="step-num">04</div><h3>Hyväksy käyttöönotto</h3><p>Erillinen turvallisuus- ja käyttöoikeustarkistus.</p><span class="step-label">Ei vielä saatavilla</span></div>
+        </div>
+      </section>
+      <footer class="footer"><span>Grid Console · V0.1 Esikatselu</span><span id="last-update">Ei päivitetty</span></footer>
+    </div>
+  </main>
+</div>
+</body>
+</html>

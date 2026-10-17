@@ -1,0 +1,17 @@
+[Unit]
+Description=Revolut X ETH/EUR public read-only collector data quality report
+
+[Service]
+Type=oneshot
+User=revxcollector
+Group=revxcollector
+WorkingDirectory=/opt/revx-bot
+Environment=PYTHONPATH=/opt/revx-bot
+Environment=LIVE_TRADING=false
+ExecStart=/opt/revx-bot/.venv/bin/python /opt/revx-bot/scripts/eth_eur_persistent_collector.py health --db /var/lib/revx-eth-eur/collector.sqlite --report /var/lib/revx-eth-eur/health.json
+StateDirectory=revx-eth-eur
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/revx-eth-eur
+UMask=0077
