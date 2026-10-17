@@ -171,6 +171,25 @@ def offline_main(argv: list[str] | None = None) -> int:
         def cancel_all_orders(self) -> None:
             raise RuntimeError("OFFLINE_CANCEL_FORBIDDEN")
 
+    # Explicit safety check before GridExecutor can create/alter any schema.
+    # An existing file without the offline marker may belong to another bot.
+    if args.db.exists():
+        import sqlite3
+        try:
+            with sqlite3.connect(f"file:{args.db.resolve().as_posix()}?mode=ro", uri=True) as connection:
+                marker=connection.execute(
+                    "SELECT value FROM bot_metadata WHERE key='supervisor_runtime_kind'"
+                ).fetchone()
+                if marker is None or marker[0] != "SYNTHETIC_OFFLINE_ONLY":
+                    print("BLOCKED: existing DB is not an offline fixture", file=sys.stderr)
+                    return 2
+                occupied=connection.execute("SELECT COUNT(*) FROM order_lineage").fetchone()[0]
+                if occupied:
+                    print("BLOCKED: existing DB contains order history", file=sys.stderr)
+                    return 2
+        except sqlite3.Error:
+            print("BLOCKED: existing DB could not be verified", file=sys.stderr)
+            return 2
     args.db.parent.mkdir(parents=True, exist_ok=True)
     from grid_executor import GridExecutor
     executor = GridExecutor(OfflineVenue(), {}, database_path=str(args.db), live_trading=False)
