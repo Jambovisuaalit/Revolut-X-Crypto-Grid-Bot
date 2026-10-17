@@ -1,0 +1,57 @@
+name: Windows User DPAPI Vault - Offline Contract Gate
+on:
+  push:
+    branches:
+      - feat/windows-dpapi-local-key-vault
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  vault-security:
+    name: dpapi-vault-test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    env:
+      LIVE_TRADING: "false"
+      DRY_RUN: "true"
+      ACCOUNT_NETWORK_TESTS: "DISABLED"
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install project and Windows-only DPAPI dependency
+        run: python -m pip install -r requirements.txt
+      - name: Compile vault and existing safety code
+        run: python -m compileall -q windows_key_vault.py scripts/windows_vault_cli.py scripts/check_windows_vault_gate.py account_readonly.py bot_main.py supervisor_runtime.py tests
+      - name: Windows native DPAPI and NTFS DACL tests; Linux rejects by design
+        run: python -m unittest tests.test_windows_key_vault -v
+      - name: GET-only account mock suite
+        run: python -m unittest tests.test_authenticated_account_readonly -v
+      - name: Entire offline regression suite
+        run: python -m unittest discover -s tests -v
+      - name: Strict vault release gate and redacted report
+        run: python scripts/check_windows_vault_gate.py --commit-sha ${{ github.sha }} --output vault-artifacts/vault-gate.json
+      - name: Process recovery mock regression
+        run: python scripts/process_recovery_integration.py
+      - name: Kill-switch mock regression
+        run: python scripts/drawdown_integration.py
+      - name: Validate process recovery and drawdown reports
+        run: python scripts/check_pr3_recovery_gate.py --report-dir recovery-artifacts --commit-sha ${{ github.sha }}
+      - name: Save non-sensitive evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-vault-safety-${{ matrix.os }}
+          path: |
+            vault-artifacts/vault-gate.json
+            recovery-artifacts/*.json
+          if-no-files-found: warn

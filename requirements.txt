@@ -1,3 +1,6 @@
 cryptography>=42.0,<46
 requests>=2.31,<3
 
+
+# Windows-only: user-scoped DPAPI and protected NTFS ACLs
+pywin32>=306,<400; sys_platform == 'win32'
