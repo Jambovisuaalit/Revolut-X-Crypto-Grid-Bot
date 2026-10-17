@@ -175,8 +175,9 @@ def offline_main(argv: list[str] | None = None) -> int:
     # An existing file without the offline marker may belong to another bot.
     if args.db.exists():
         import sqlite3
+        from contextlib import closing
         try:
-            with sqlite3.connect(f"file:{args.db.resolve().as_posix()}?mode=ro", uri=True) as connection:
+            with closing(sqlite3.connect(f"file:{args.db.resolve().as_posix()}?mode=ro", uri=True)) as connection:
                 marker=connection.execute(
                     "SELECT value FROM bot_metadata WHERE key='supervisor_runtime_kind'"
                 ).fetchone()
