@@ -206,6 +206,61 @@ class GridExecutor:
         if row is not None and row["value"] == "true":
             raise ReconciliationError("persistent kill switch is triggered; trading halted")
 
+    def _confirm_mutation(
+        self, row: sqlite3.Row, acknowledgement: Mapping[str, Any],
+        *, parent: sqlite3.Row | None = None,
+    ) -> tuple[str, Decimal, Decimal]:
+        """Confirm by authenticated GET before local acceptance of POST/PUT.
+
+        Acknowledgement contains no price, side or quantity. Only GET /orders/{id}
+        can independently check those invariants; for replacements also require
+        the original venue order to be terminal/replaced.
+        """
+        venue_id = acknowledgement.get("venue_order_id")
+        if not isinstance(venue_id, str) or acknowledgement.get("client_order_id") != row["client_order_id"]:
+            raise ReconciliationError("acknowledgement order identity mismatch")
+        try:
+            if str(uuid.UUID(venue_id)) != venue_id.lower():
+                raise ValueError("noncanonical venue UUID")
+        except ValueError as exc:
+            raise ReconciliationError("acknowledgement venue id is not a canonical UUID") from exc
+        if venue_id == row["venue_order_id"] or (
+            parent is not None and venue_id == parent["venue_order_id"]
+        ):
+            raise ReconciliationError("venue id collision or unchanged replacement id")
+        ack_state = acknowledgement.get("state")
+        if ack_state not in {
+            "pending_new", "new", "partially_filled", "filled", "cancelled", "rejected"
+        }:
+            raise ReconciliationError("unrecognized acknowledgement state")
+        item = self.client.get_order(venue_id)
+        if not isinstance(item, Mapping) or item.get("id") != venue_id:
+            raise ReconciliationError("venue GET id mismatch")
+        self._order_identity(row, item)
+        status, filled, leaves = self._order_status(item)
+        allowed = {
+            "pending_new": {"pending_new", "new", "partially_filled", "filled", "cancelled", "rejected"},
+            "new": {"new", "partially_filled", "filled", "cancelled", "rejected"},
+            "partially_filled": {"partially_filled", "filled", "cancelled"},
+            "filled": {"filled"},
+            "cancelled": {"cancelled"},
+            "rejected": {"rejected"},
+        }
+        if status not in allowed[ack_state]:
+            raise ReconciliationError("acknowledgement and venue GET states disagree")
+        if parent is not None:
+            parent_item = self.client.get_order(parent["venue_order_id"])
+            if not isinstance(parent_item, Mapping) or parent_item.get("id") != parent["venue_order_id"]:
+                raise ReconciliationError("replacement parent GET id mismatch")
+            self._order_identity(parent, parent_item)
+            parent_status, _, _ = self._order_status(parent_item)
+            if parent_status != "replaced":
+                raise ReconciliationError("replacement parent was not confirmed replaced")
+            predecessor = item.get("previous_order_id")
+            if predecessor is not None and predecessor != parent["venue_order_id"]:
+                raise ReconciliationError("replacement GET predecessor mismatch")
+        return status, filled, leaves
+
     def create_order(
         self, *, client_order_id: str, symbol: str, side: str,
         price: Decimal, quantity: Decimal, free_balances: Mapping[str, Decimal]
@@ -255,13 +310,20 @@ class GridExecutor:
                 )
             try:
                 result = self.client.place_order(payload)
+                persisted = self.connection.execute(
+                    "SELECT * FROM order_lineage WHERE client_order_id=? AND status='pending_new'",
+                    (client_order_id,),
+                ).fetchone()
+                if persisted is None:
+                    raise ReconciliationError("create intent no longer pending")
+                status, filled, leaves = self._confirm_mutation(persisted, result)
                 with self._write_transaction():
                     changed = self.connection.execute(
-                        "UPDATE order_lineage SET venue_order_id=?,status=?,updated_at=CURRENT_TIMESTAMP "
+                        "UPDATE order_lineage SET venue_order_id=?,status=?,"
+                        "filled_quantity=?,leaves_quantity=?,updated_at=CURRENT_TIMESTAMP "
                         "WHERE client_order_id=? AND status='pending_new'",
-                        (result["venue_order_id"],
-                         "venue_pending" if result["state"] == "pending_new" else result["state"],
-                         client_order_id),
+                        (result["venue_order_id"], "venue_pending" if status == "pending_new" else status,
+                         decimal_text(filled), decimal_text(leaves), client_order_id),
                     ).rowcount
                     if changed != 1:
                         raise ReconciliationError("create acknowledgement conflicts with local intent")
@@ -355,8 +417,13 @@ class GridExecutor:
                 )
             try:
                 result = self.client.replace_order(venue_order_id, payload)
-                if result["venue_order_id"] == venue_order_id:
-                    raise ReconciliationError("replacement response reused parent venue id")
+                child = self.connection.execute(
+                    "SELECT * FROM order_lineage WHERE client_order_id=? AND status='pending_replace'",
+                    (child_id,),
+                ).fetchone()
+                if child is None:
+                    raise ReconciliationError("replacement intent no longer pending")
+                status, filled, leaves = self._confirm_mutation(child, result, parent=parent)
                 with self._write_transaction():
                     parent_update = self.connection.execute(
                         "UPDATE order_lineage SET status='replaced',"
@@ -366,11 +433,12 @@ class GridExecutor:
                     ).rowcount
                     child_update = self.connection.execute(
                         "UPDATE order_lineage SET venue_order_id=?,status=?,"
-                        "updated_at=CURRENT_TIMESTAMP "
+                        "filled_quantity=?,leaves_quantity=?,updated_at=CURRENT_TIMESTAMP "
                         "WHERE client_order_id=? AND parent_venue_order_id=? "
                         "AND root_client_order_id=? AND status='pending_replace'",
                         (result["venue_order_id"],
-                         "venue_pending" if result["state"] == "pending_new" else result["state"],
+                         "venue_pending" if status == "pending_new" else status,
+                         decimal_text(filled), decimal_text(leaves),
                          child_id, venue_order_id, parent["root_client_order_id"]),
                     ).rowcount
                     if parent_update != 1 or child_update != 1:
