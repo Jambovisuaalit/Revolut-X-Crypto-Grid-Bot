@@ -43,19 +43,21 @@ class PairRules:
     @classmethod
     def from_api(cls, payload: Mapping[str, Any]) -> "PairRules":
         """Build validated rules from a configuration response item."""
-        required = ("symbol", "base_step", "quote_step", "min_base_size", "max_base_size", "status")
+        required = ("symbol", "base_step", "quote_step", "min_order_size", "max_order_size", "min_order_size_quote", "status")
         if any(key not in payload for key in required):
             raise PrecisionError("pair configuration is missing required fields")
         rules = cls(
-            symbol=SymbolNormalizer.to_display_symbol(str(payload["symbol"])),
+            symbol=SymbolNormalizer.to_display_symbol(str(payload.get("symbol") or f'{payload.get("base", "")}/{payload.get("quote", "")}')),
             base_step=decimal_from_api(payload["base_step"], "base_step"),
             quote_step=decimal_from_api(payload["quote_step"], "quote_step"),
-            min_base_size=decimal_from_api(payload["min_base_size"], "min_base_size"),
-            max_base_size=decimal_from_api(payload["max_base_size"], "max_base_size"),
+            min_base_size=decimal_from_api(payload["min_order_size"], "min_order_size"),
+            max_base_size=decimal_from_api(payload["max_order_size"], "max_order_size"),
             status=str(payload["status"]).lower(),
         )
         if min(rules.base_step, rules.quote_step, rules.min_base_size) <= 0:
             raise PrecisionError("pair steps and minimum size must be positive")
+        if decimal_from_api(payload["min_order_size_quote"], "min_order_size_quote") <= 0:
+            raise PrecisionError("minimum quote size must be positive")
         if rules.max_base_size < rules.min_base_size:
             raise PrecisionError("maximum size is below minimum size")
         return rules
@@ -64,7 +66,7 @@ class PairRules:
         """Round price and quantity down and enforce pair availability and bounds."""
         if self.status not in {"active", "online", "enabled", "trading"}:
             raise PrecisionError(f"pair {self.symbol} is not tradable")
-        if price <= 0 or quantity <= 0:
+        if not price.is_finite() or not quantity.is_finite() or price <= 0 or quantity <= 0:
             raise PrecisionError("price and quantity must be positive")
         rounded_price = (
             (price / self.quote_step).to_integral_value(rounding=ROUND_DOWN) * self.quote_step
