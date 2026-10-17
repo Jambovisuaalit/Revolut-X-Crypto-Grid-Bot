@@ -323,7 +323,7 @@ class WireContracts(unittest.TestCase):
     def test_post_put_timeout_5xx_429_and_disconnect_send_at_most_once(self):
         cid = uid()
         errors = [requests.Timeout("lost"), requests.ConnectionError("reset"),
-                  requests.ChunkedEncodingError("truncated"), Mock(status_code=500, content=b"err"),
+                  requests.exceptions.ChunkedEncodingError("truncated"), Mock(status_code=500, content=b"err"),
                   Mock(status_code=429, content=b"err")]
         for method in ("place_order", "replace_order"):
             for outcome in errors:
