@@ -75,6 +75,10 @@ jobs:
               throw 'FAIL_CLOSED_SIGNATURE_REPORT_MISSING'
             }
           }
+          # Both expected negative invocations set LASTEXITCODE nonzero.
+          # After asserting they failed as required, clear it so the step
+          # itself is marked PASS rather than treated as a failed verifier.
+          $global:LASTEXITCODE = 0
       - name: Build portable developer ZIP
         shell: pwsh
         run: |
