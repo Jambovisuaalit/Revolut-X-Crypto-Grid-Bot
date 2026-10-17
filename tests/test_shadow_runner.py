@@ -81,7 +81,7 @@ class ShadowRunnerTests(unittest.TestCase):
         later = NOW + timedelta(seconds=1)
         # With a high maker fee, the assumed fill itself breaches the 3% floor.
         runner.cfg.fee_rate = Decimal("0.90")
-        runner.cash = Decimal("960")  # deterministic prior loss, before the next paper fill
+        runner.cash = Decimal("971")  # pre-fill NAV above 970; fee and mark-down breach after fill
         decision = runner.evaluate(snapshot("99", "99.5", later), later)
         self.assertTrue(decision["halted"])
         self.assertIn("DRAWDOWN_LIMIT_POST_FILL", decision["reasons"])
