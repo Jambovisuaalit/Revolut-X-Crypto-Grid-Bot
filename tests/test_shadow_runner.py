@@ -56,6 +56,35 @@ class ShadowRunnerTests(unittest.TestCase):
         self.assertEqual(b["previous_hash"], a["hash"])
         self.assertTrue(b["halted"])
 
+    def test_timestamp_fail_closed_and_logged(self):
+        invalid = [
+            {},
+            {"timestamp": "not-a-time"},
+            {"timestamp": "2026-10-17T00:00:00"},
+            {"timestamp": (NOW + timedelta(seconds=1)).isoformat()},
+        ]
+        for item in invalid:
+            with self.subTest(item=item):
+                runner = ShadowRunner()
+                payload = dict(snapshot(), **item)
+                if "timestamp" not in item:
+                    payload.pop("timestamp")
+                decision = runner.evaluate(payload, NOW)
+                self.assertTrue(decision["halted"])
+                self.assertEqual(decision["action"], "HOLD")
+                self.assertTrue(decision["hash"])
+                self.assertEqual(runner.violations, 1)
+
+    def test_post_fill_drawdown_is_rechecked(self):
+        runner = ShadowRunner()
+        runner.evaluate(snapshot(), NOW)
+        later = NOW + timedelta(seconds=1)
+        # With a high maker fee, the assumed fill itself breaches the 3% floor.
+        runner.cfg.fee_rate = Decimal("0.90")
+        decision = runner.evaluate(snapshot("99", "99.5", later), later)
+        self.assertTrue(decision["halted"])
+        self.assertIn("DRAWDOWN_LIMIT_POST_FILL", decision["reasons"])
+
     def test_invalid_book(self):
         with self.assertRaises(ValueError):
             parse_book(snapshot("101", "100"))
