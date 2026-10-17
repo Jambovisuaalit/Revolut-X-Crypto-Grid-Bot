@@ -13,9 +13,9 @@ class ShadowRunnerTests(unittest.TestCase):
     def test_paper_accounting_and_cap(self):
         runner = ShadowRunner()
         event = runner.evaluate(snapshot(), NOW)
-        self.assertEqual(event["action"], "PAPER_BUY")
+        self.assertEqual(event["action"], "PAPER_POST_ONLY_BUY_PLACED")
         self.assertLessEqual(runner.btc * Decimal("100.1"), Decimal("50"))
-        self.assertGreater(runner.costs, 0)
+        self.assertEqual(runner.costs, 0)
 
     def test_spread_guard(self):
         runner = ShadowRunner()
@@ -35,7 +35,19 @@ class ShadowRunnerTests(unittest.TestCase):
         event = runner.evaluate(snapshot("1", "1.01", later), later)
         self.assertIn("DRAWDOWN_LIMIT", event["reasons"])
         self.assertTrue(event["halted"])
-        self.assertEqual(runner.trades, 1)
+        self.assertEqual(runner.trades, 0)
+
+    def test_restored_state_keeps_pending_order_and_hash(self):
+        first = ShadowRunner()
+        event = first.evaluate(snapshot(), NOW)
+        second = ShadowRunner()
+        second.restore(first.state())
+        self.assertEqual(second.pending_buy, first.pending_buy)
+        self.assertEqual(second.previous_hash, event["hash"])
+        later = NOW + timedelta(seconds=1)
+        next_event = second.evaluate(snapshot("99", "99.5", later), later)
+        self.assertEqual(next_event["action"], "PAPER_MAKER_FILL_ASSUMED")
+        self.assertEqual(next_event["previous_hash"], event["hash"])
 
     def test_hash_linkage(self):
         runner = ShadowRunner()
