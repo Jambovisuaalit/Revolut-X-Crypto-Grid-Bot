@@ -44,6 +44,8 @@ jobs:
       - name: Capture 3 public ETH/EUR books + public pairs + 15m candle history
         # Failed public GET is a visible failed job, never a false PASS.
         run: python scripts/capture_eth_eur_public_once.py --samples 3 --capture public-data/capture.json --report public-data/report.json
+      - name: Replay saved public capture offline without trading
+        run: python scripts/inspect_eth_eur_public_capture.py --capture public-data/capture.json --journal public-data/replay.sqlite --report public-data/replay-report.json
       - name: Upload evidence regardless of status
         if: always()
         uses: actions/upload-artifact@v4
@@ -52,4 +54,5 @@ jobs:
           path: |
             public-data/capture.json
             public-data/report.json
+            public-data/replay-report.json
           if-no-files-found: warn
