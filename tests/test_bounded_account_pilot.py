@@ -199,5 +199,105 @@ class PilotGateTests(unittest.TestCase):
         self.assertEqual(snapshot.live_trading_approval,"NO_GO")
 
 
+class DurablePilotLedgerTests(unittest.TestCase):
+    """Local mock-only crash/restart budgets, independent of account credentials."""
+
+    def test_13_success_seals_ledger_and_prevents_new_session(self):
+        import tempfile
+        from pilot_budget_store import DurablePilotLedger, PilotLedgerError
+        with tempfile.TemporaryDirectory() as td:
+            db=Path(td)/"pilot-once.sqlite"
+            with DurablePilotLedger(db) as ledger:
+                transport=Transport([Response(balance()),Response(page([])),Response(page([]))])
+                s=BoundedPilotSession(KEY,Ed25519PrivateKey.generate(),
+                                      transport=transport,ledger=ledger,clock_ms=lambda:TIME)
+                snapshot=s.run_once()
+                self.assertEqual(s.guard.attempts,3)
+                self.assertEqual(ledger.attempts(),3)
+                self.assertEqual(s.status,"SCHEMA_PARSED_NOT_RECONCILED")
+            with self.assertRaisesRegex(PilotLedgerError,"ALREADY_EXISTS"):
+                DurablePilotLedger(db)
+
+    def test_14_timeout_consumes_durable_attempt_and_restart_not_rearmed(self):
+        import tempfile
+        import requests
+        from pilot_budget_store import DurablePilotLedger, PilotLedgerError
+        with tempfile.TemporaryDirectory() as td:
+            db=Path(td)/"pilot-crash.sqlite"
+            with DurablePilotLedger(db) as ledger:
+                transport=Transport([requests.Timeout("secret")])
+                s=BoundedPilotSession(KEY,Ed25519PrivateKey.generate(),
+                                      transport=transport,ledger=ledger,clock_ms=lambda:TIME)
+                with self.assertRaises(PilotGateError):
+                    s.run_once()
+                self.assertEqual(ledger.attempts(),1)
+            with self.assertRaises(PilotLedgerError):
+                DurablePilotLedger(db)
+
+    def test_15_durable_budget_overrides_volatile_allowance(self):
+        import tempfile
+        from pilot_budget_store import DurablePilotLedger
+        with tempfile.TemporaryDirectory() as td:
+            db=Path(td)/"pilot-two.sqlite"
+            with DurablePilotLedger(db,max_attempts=2) as ledger:
+                transport=Transport([Response(balance()),Response(page([])),
+                                     Response(page([]))])
+                s=BoundedPilotSession(KEY,Ed25519PrivateKey.generate(),
+                                      transport=transport,ledger=ledger,clock_ms=lambda:TIME)
+                with self.assertRaises(PilotGateError):
+                    s.run_once()
+                self.assertEqual(ledger.attempts(),2)
+                self.assertEqual(len(transport.calls),2)
+                self.assertEqual(s.status,"BLOCKED")
+
+    def test_16_process_crash_without_seal_requires_manual_review(self):
+        import tempfile
+        from pilot_budget_store import DurablePilotLedger, PilotLedgerError
+        with tempfile.TemporaryDirectory() as td:
+            db=Path(td)/"pilot-interrupted.sqlite"
+            ledger=DurablePilotLedger(db)
+            self.assertEqual(ledger.reserve_before_get(),1)
+            ledger.close()  # simulate process stop before HTTP response
+            with self.assertRaisesRegex(PilotLedgerError,"ALREADY_EXISTS"):
+                DurablePilotLedger(db)
+
+    def test_17_live_mode_and_bot_database_rejected(self):
+        import tempfile
+        from pilot_budget_store import DurablePilotLedger, PilotLedgerError
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaisesRegex(PilotLedgerError,"REAL_ACCOUNT"):
+                DurablePilotLedger(Path(td)/"fixture.sqlite",mode="REAL_ACCOUNT")
+            with self.assertRaisesRegex(PilotLedgerError,"LIVE_DATABASE"):
+                DurablePilotLedger(Path(td)/"bot_state.db")
+
+    def test_18_durable_reservation_thread_safety(self):
+        import tempfile
+        from pilot_budget_store import DurablePilotLedger, PilotLedgerError
+        with tempfile.TemporaryDirectory() as td:
+            db=Path(td)/"pilot-parallel.sqlite"
+            with DurablePilotLedger(db,max_attempts=5) as ledger:
+                def reserve(_):
+                    try:
+                        ledger.reserve_before_get()
+                        return True
+                    except PilotLedgerError:
+                        return False
+                with ThreadPoolExecutor(max_workers=8) as pool:
+                    results=list(pool.map(reserve,range(40)))
+                self.assertEqual(sum(results),5)
+                self.assertEqual(ledger.attempts(),5)
+
+    def test_19_invalid_existing_foreign_database_not_modified(self):
+        import tempfile
+        from pilot_budget_store import DurablePilotLedger, PilotLedgerError
+        with tempfile.TemporaryDirectory() as td:
+            db=Path(td)/"existing.sqlite"
+            db.write_text("opaque existing file",encoding="utf-8")
+            before=db.read_bytes()
+            with self.assertRaises(Exception):
+                DurablePilotLedger(db)
+            self.assertEqual(db.read_bytes(),before)
+
+
 if __name__=="__main__":
     unittest.main()
