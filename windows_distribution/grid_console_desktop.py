@@ -52,12 +52,20 @@ def check_status(payload: dict[str, Any]) -> None:
         raise RuntimeError("STRATEGY_MUST_REMAIN_STOPPED")
 
 
+def development_react_root() -> Path | None:
+    """Use source-tree Vite build only in unfrozen development; never in EXE."""
+    if getattr(sys, "frozen", False):
+        return None
+    candidate = Path(__file__).resolve().parents[1] / "frontend" / "dist"
+    return candidate if candidate.is_dir() else None
+
+
 def status_through_loopback(supervisor_db: Path | None = None, *,
                             react_root: Path | None = None) -> dict[str, Any]:
     """Exercise existing HTTP route, including forbidden HTTP mutations."""
     assert_safe_env()
     with local_server(None, 0, supervisor_db=supervisor_db, ui="react",
-                      react_root=react_root) as server:
+                      react_root=react_root or development_react_root()) as server:
         thread = Thread(target=server.serve_forever, daemon=True, name="grid-console-test-http")
         thread.start()
         try:
@@ -140,7 +148,7 @@ def run_gui(*, open_browser: bool = True) -> int:
     import tkinter as tk
     from tkinter import filedialog, messagebox
 
-    server = local_server(None, 0, ui="react")
+    server = local_server(None, 0, ui="react", react_root=development_react_root())
     url = f"http://127.0.0.1:{server.server_port}/"
     worker = Thread(target=server.serve_forever, daemon=True, name="grid-console-http")
     worker.start()
@@ -232,7 +240,8 @@ def run_gui(*, open_browser: bool = True) -> int:
                 )
                 return
             try:
-                next_server = local_server(None, 0, supervisor_db=candidate, ui="react")
+                next_server = local_server(None, 0, supervisor_db=candidate, ui="react",
+                                           react_root=development_react_root())
                 next_worker = Thread(target=next_server.serve_forever, daemon=True,
                                      name="grid-console-local-db-http")
                 next_worker.start()
