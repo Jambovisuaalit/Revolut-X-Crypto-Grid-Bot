@@ -52,7 +52,7 @@ class AccountTransport(Protocol):
     """Only GET is structurally available to the account reader."""
 
     def get(self, url: str, *, headers: Mapping[str, str], timeout: int,
-            allow_redirects: bool, params: None = None) -> Any:
+            allow_redirects: bool, params: None = None, stream: bool = True) -> Any:
         ...
 
 
@@ -242,36 +242,47 @@ class AuthenticatedAccountReader:
             headers = self._headers(path, query)
             try:
                 response = self._transport.get(
-                    full_url, headers=headers, timeout=10,
+                    full_url, headers=headers, timeout=10, stream=True,
                     allow_redirects=False, params=None,
                 )
-            except requests.RequestException:
+            except Exception:
                 raise AccountReadError("GET transport failed") from None
-            if response.status_code == 429:
-                if attempt == MAX_RATE_RETRIES:
-                    raise AccountReadError("rate limit retry budget exhausted")
-                try:
-                    delay = int(response.headers.get("Retry-After", ""))
-                except (TypeError, ValueError):
-                    raise AccountReadError("invalid Retry-After milliseconds") from None
-                if delay < 0 or delay > MAX_RETRY_AFTER_MS:
-                    raise AccountReadError("Retry-After outside permitted range")
-                self._sleeper(delay / 1000)
-                continue
-            if response.status_code in (301, 302, 303, 307, 308):
-                raise AccountReadError("redirect rejected")
-            if response.status_code in (401, 403):
-                raise AccountReadError("account authentication/permission denied")
-            if response.status_code != 200:
-                raise AccountReadError("authenticated account GET failed")
             try:
-                raw = response.content
-                if len(raw) > MAX_RESPONSE_BYTES:
-                    raise AccountReadError("response exceeded size limit")
-                result = json.loads(raw)
-            except (ValueError, UnicodeDecodeError, TypeError):
-                raise AccountReadError("malformed JSON from account endpoint") from None
-            return result
+                if response.status_code == 429:
+                    if attempt == MAX_RATE_RETRIES:
+                        raise AccountReadError("rate limit retry budget exhausted")
+                    try:
+                        delay = int(response.headers.get("Retry-After", ""))
+                    except (TypeError, ValueError, AttributeError):
+                        raise AccountReadError("invalid Retry-After milliseconds") from None
+                    if delay < 0 or delay > MAX_RETRY_AFTER_MS:
+                        raise AccountReadError("Retry-After outside permitted range")
+                    self._sleeper(delay / 1000)
+                    continue
+                if response.status_code in (301, 302, 303, 307, 308):
+                    raise AccountReadError("redirect rejected")
+                if response.status_code in (401, 403):
+                    raise AccountReadError("account authentication/permission denied")
+                if response.status_code != 200:
+                    raise AccountReadError("authenticated account GET failed")
+                # Bound the actual bytes read, not only the decoded body after
+                # requests has already downloaded an arbitrarily large payload.
+                chunks = []
+                total_bytes = 0
+                try:
+                    for chunk in response.iter_content(chunk_size=65536):
+                        total_bytes += len(chunk)
+                        if total_bytes > MAX_RESPONSE_BYTES:
+                            raise AccountReadError("response exceeded size limit")
+                        chunks.append(chunk)
+                    result = json.loads(b"".join(chunks))
+                except (ValueError, UnicodeDecodeError, TypeError, requests.RequestException):
+                    raise AccountReadError("malformed or interrupted account response") from None
+                return result
+            finally:
+                response.close()
+                if self._owned_session is not None:
+                    self._owned_session.cookies.clear()
         raise AccountReadError("unexpected retry path")
 
     def balances(self) -> tuple[Balance, ...]:
