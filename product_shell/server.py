@@ -13,6 +13,7 @@ import sqlite3
 from urllib.parse import urlsplit
 
 from eth_shadow_v1.collector_quality import evaluate_quality
+from product_shell.local_runtime_readonly import inspect_local_runtime
 from eth_shadow_v1.config import Config
 
 ROOT = Path(__file__).resolve().parent
@@ -65,7 +66,7 @@ def snapshot(db_path: Path | None, now_ms: int) -> dict:
     }
 
 
-def make_handler(db_path: Path | None, clock) -> type[BaseHTTPRequestHandler]:
+def make_handler(db_path: Path | None, clock, supervisor_db: Path | None = None) -> type[BaseHTTPRequestHandler]:
     """Inject read-only dependencies without global mutation."""
     class Handler(BaseHTTPRequestHandler):
         server_version = "GridConsole"
@@ -112,6 +113,11 @@ def make_handler(db_path: Path | None, clock) -> type[BaseHTTPRequestHandler]:
             if path.query or path.fragment:
                 self._serve(b"Invalid path", "text/plain; charset=utf-8", 400, head=head)
                 return
+            if path.path == "/api/runtime":
+                data = json.dumps(inspect_local_runtime(supervisor_db, clock()),
+                                  sort_keys=True, ensure_ascii=False).encode("utf-8")
+                self._serve(data, "application/json; charset=utf-8", head=head)
+                return
             if path.path == "/api/status":
                 data = json.dumps(snapshot(db_path, clock()),
                                   sort_keys=True, ensure_ascii=False).encode("utf-8")
@@ -141,10 +147,10 @@ def make_handler(db_path: Path | None, clock) -> type[BaseHTTPRequestHandler]:
 
 
 def local_server(db_path: Path | None = None, port: int = 0, *,
-                 clock=None) -> ThreadingHTTPServer:
+                 clock=None, supervisor_db: Path | None = None) -> ThreadingHTTPServer:
     """Bind *only* to loopback. Never allow LAN/internet hosting."""
     import time
-    handler = make_handler(db_path, clock or (lambda: time.time_ns() // 1_000_000))
+    handler = make_handler(db_path, clock or (lambda: time.time_ns() // 1_000_000), supervisor_db)
     server = ThreadingHTTPServer(("127.0.0.1", port), handler)
     server.daemon_threads = True
     return server
