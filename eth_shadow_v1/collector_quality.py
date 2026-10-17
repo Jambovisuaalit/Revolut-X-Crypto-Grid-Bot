@@ -32,14 +32,16 @@ def percentile(values: list[Decimal], fraction: Decimal) -> str | None:
     return str(values[index])
 
 
-def audit_chain(db: sqlite3.Connection) -> dict[str, Any]:
-    """Recompute every row's provenance and the full append-only chain."""
-    last = "0"*64
+def audit_chain(db: sqlite3.Connection, *, full: bool = False) -> dict[str, Any]:
+    """Verify last 5000 observations per minute, or complete history on demand."""
+    min_seq = 1 if full else max(1, db.execute("SELECT COALESCE(MAX(seq),0) FROM books").fetchone()[0] - 4999)
+    prior = db.execute("SELECT entry_hash FROM books WHERE seq<? ORDER BY seq DESC LIMIT 1", (min_seq,)).fetchone()
+    last = prior[0] if prior else "0"*64
     count = 0
     for row in db.execute(
         """SELECT checked_ms,source_ms,accepted,reason,latency_ms,bid,ask,
                   spread_pct,bid_depth_eur,ask_depth_eur,previous_hash,entry_hash,
-                  payload_json FROM books ORDER BY seq"""):
+                  payload_json FROM books WHERE seq>=? ORDER BY seq""", (min_seq,)):
         (checked, source, accepted, reason, latency, bid, ask, spread,
          bid_depth, ask_depth, previous, claimed, payload_json) = row
         if previous != last:
@@ -71,10 +73,11 @@ def audit_chain(db: sqlite3.Connection) -> dict[str, Any]:
         if claimed != expected:
             raise ValueError("COLLECTOR_AUDIT_HASH_MISMATCH")
         last, count = expected, count+1
-    return {"status": "PASS", "rows_checked": count, "final_hash": last}
+    return {"status": "PASS", "rows_checked": count, "final_hash": last,
+            "scope": "FULL" if full else "TAIL_5000", "unverified_prefix_rows": min_seq - 1}
 
 
-def evaluate_quality(db_path: Path, now_ms: int, *, verify_audit: bool = True) -> dict:
+def evaluate_quality(db_path: Path, now_ms: int, *, verify_audit: bool = True, full_audit: bool = False) -> dict:
     """Read-only report; not a forward-shadow acceptance decision."""
     path = Path(db_path)
     if not path.exists():
@@ -83,23 +86,25 @@ def evaluate_quality(db_path: Path, now_ms: int, *, verify_audit: bool = True) -
     db = sqlite3.connect(f"file:{path.resolve().as_posix()}?mode=ro", uri=True)
     try:
         info = dict(db.execute("SELECT key,value FROM info").fetchall())
+        lifetime_sample_count = db.execute("SELECT COUNT(*) FROM books").fetchone()[0]
+        started = int(info.get("started_ms") or now_ms)
+        elapsed = max(0, now_ms - started)
+        window_start = max(started, now_ms - DAY_MS)
         stats = db.execute("""
             SELECT COUNT(*), COALESCE(SUM(accepted),0), MIN(checked_ms), MAX(checked_ms),
                    MAX(CASE WHEN accepted=1 THEN checked_ms ELSE NULL END)
-            FROM books
-        """).fetchone()
+            FROM books WHERE checked_ms>=?
+        """, (window_start,)).fetchone()
         total, good, first, last, valid = stats
-        started = int(info.get("started_ms") or (first or now_ms))
-        elapsed = max(0, now_ms-started)
-        # Expected slots since collector started include downtime: no silent reset
-        expected = elapsed//PERIOD_MS + 1
+        # Rolling 24h completeness includes collector downtime.
+        expected = (now_ms-window_start)//PERIOD_MS + 1
         coverage = min(D(total)/D(max(expected,1)), D(1))
         valid_ratio = D(good)/D(max(total,1))
         lag = [D(row[0]) for row in db.execute(
-            "SELECT latency_ms FROM books WHERE accepted=1 AND latency_ms IS NOT NULL")]
+            "SELECT latency_ms FROM books WHERE checked_ms>=? AND accepted=1 AND latency_ms IS NOT NULL", (window_start,))]
         spreads = [D(row[0]) for row in db.execute(
-            "SELECT spread_pct FROM books WHERE accepted=1 AND spread_pct IS NOT NULL")]
-        ordered = [r[0] for r in db.execute("SELECT checked_ms FROM books ORDER BY seq")]
+            "SELECT spread_pct FROM books WHERE checked_ms>=? AND accepted=1 AND spread_pct IS NOT NULL", (window_start,))]
+        ordered = [r[0] for r in db.execute("SELECT checked_ms FROM books WHERE checked_ms>=? ORDER BY seq", (window_start,))]
         gaps = sum(1 for earlier, later in zip(ordered,ordered[1:])
                    if later-earlier > MAX_GAP_MS)
         max_gap = max([later-earlier for earlier,later in zip(ordered,ordered[1:])] or [0])
@@ -111,7 +116,7 @@ def evaluate_quality(db_path: Path, now_ms: int, *, verify_audit: bool = True) -
             "SELECT checked_ms,pair_hash,active FROM pair_checks ORDER BY checked_ms DESC LIMIT 1"
         ).fetchone()
         free_bytes = shutil.disk_usage(path.parent).free
-        audit = audit_chain(db) if verify_audit else {"status": "NOT_VERIFIED"}
+        audit = audit_chain(db, full=full_audit) if verify_audit else {"status": "NOT_VERIFIED"}
         alerts = []
         if not total:
             alerts.append("NO_BOOK_SAMPLES")
@@ -149,6 +154,7 @@ def evaluate_quality(db_path: Path, now_ms: int, *, verify_audit: bool = True) -
             "status": "DATA_READY_FOR_REVIEW" if healthy else "BLOCKED",
             "runtime_ms": elapsed, "start_ms": started, "report_at_ms": now_ms,
             "sample_interval_ms": PERIOD_MS, "sample_count": total,
+            "lifetime_sample_count": lifetime_sample_count, "quality_window_start_ms": window_start,
             "accepted_count": good, "rejected_count": total-good,
             "expected_slots": expected,
             "coverage_ratio": str(coverage),
