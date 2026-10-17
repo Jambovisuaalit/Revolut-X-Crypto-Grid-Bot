@@ -57,6 +57,24 @@ class AccountTransport(Protocol):
 
 
 @dataclass(frozen=True)
+class ReadLimits:
+    """Optional strict GET-only bounds. Default reader behavior stays unchanged.
+
+    The separate pilot runner uses a 25-GET transport budget and
+    max 10 pages per list, with zero 429 retries.
+    """
+    max_pages_per_list: int = 10
+    max_rate_retries: int = 0
+
+    def __post_init__(self) -> None:
+        if (type(self.max_pages_per_list) is not int or
+                not 1 <= self.max_pages_per_list <= 10 or
+                type(self.max_rate_retries) is not int or
+                self.max_rate_retries != 0):
+            raise ValueError("pilot reader limits require <=10 pages and zero retries")
+
+
+@dataclass(frozen=True)
 class Balance:
     currency: str
     available: Decimal
@@ -170,6 +188,7 @@ class AuthenticatedAccountReader:
         transport: AccountTransport | None = None,
         clock_ms: Callable[[], int] | None = None,
         sleeper: Callable[[float], None] = time.sleep,
+        read_limits: ReadLimits | None = None,
     ) -> None:
         if not isinstance(api_key, str) or not IDENTITY.fullmatch(api_key):
             raise ValueError("API key must be a 64-character alphanumeric identifier")
@@ -179,6 +198,9 @@ class AuthenticatedAccountReader:
         self._private_key = private_key
         self._clock_ms = clock_ms or (lambda: time.time_ns() // 1_000_000)
         self._sleeper = sleeper
+        if read_limits is not None and not isinstance(read_limits, ReadLimits):
+            raise TypeError("read_limits must be a ReadLimits instance")
+        self._read_limits = read_limits
         if transport is None:
             session = requests.Session()
             session.trust_env = False
@@ -238,7 +260,8 @@ class AuthenticatedAccountReader:
             raise AccountReadError("cursor forbidden for this endpoint")
         query = urlencode(sorted(params.items()), safe="")
         full_url = BASE_URL + path + ("?" + query if query else "")
-        for attempt in range(MAX_RATE_RETRIES+1):
+        retry_budget = self._read_limits.max_rate_retries if self._read_limits else MAX_RATE_RETRIES
+        for attempt in range(retry_budget + 1):
             headers = self._headers(path, query)
             try:
                 response = self._transport.get(
@@ -249,7 +272,7 @@ class AuthenticatedAccountReader:
                 raise AccountReadError("GET transport failed") from None
             try:
                 if response.status_code == 429:
-                    if attempt == MAX_RATE_RETRIES:
+                    if attempt == retry_budget:
                         raise AccountReadError("rate limit retry budget exhausted")
                     try:
                         delay = int(response.headers.get("Retry-After", ""))
@@ -295,7 +318,8 @@ class AuthenticatedAccountReader:
         seen_cursors: set[str] = set()
         seen_ids: set[str] = set()
         cursor: str | None = None
-        for page in range(1, MAX_PAGES + 1):
+        page_budget = self._read_limits.max_pages_per_list if self._read_limits else MAX_PAGES
+        for page in range(1, page_budget + 1):
             payload = self._get(endpoint, cursor=cursor)
             if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
                 raise AccountReadError("orders response has invalid data array")

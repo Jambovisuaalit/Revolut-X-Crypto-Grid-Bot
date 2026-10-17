@@ -1,0 +1,55 @@
+name: Bounded GET-Only Pilot - Offline Safety Gate
+on:
+  push:
+    branches:
+      - feat/bounded-get-only-pilot-gate
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  bounded-readonly:
+    name: bounded-get-only (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      LIVE_TRADING: "false"
+      DRY_RUN: "true"
+      ACCOUNT_NETWORK_TESTS: "DISABLED"
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Compile existing modules and bounded pilot
+        run: python -m compileall -q account_readonly.py account_pilot_gate.py windows_key_vault.py scripts tests
+      - name: Bounded GET-only pilot tests
+        run: python -m unittest tests.test_bounded_account_pilot -v
+      - name: Full offline regression suite
+        run: python -m unittest discover -s tests -v
+      - name: Assert GET-only no live and strict pilot limits
+        run: python scripts/check_bounded_account_pilot.py --commit-sha ${{ github.sha }} --output pilot-artifacts/gate.json
+      - name: Process termination and restart integration
+        run: python scripts/process_recovery_integration.py
+      - name: Durable drawdown lock integration
+        run: python scripts/drawdown_integration.py
+      - name: Exact existing report content verification
+        run: python scripts/check_pr3_recovery_gate.py --report-dir recovery-artifacts --commit-sha ${{ github.sha }}
+      - name: Upload redacted evidence even after failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bounded-get-only-pilot-${{ matrix.os }}
+          path: |
+            pilot-artifacts/gate.json
+            recovery-artifacts/*.json
+          if-no-files-found: warn
