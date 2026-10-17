@@ -75,7 +75,7 @@ class Config:
                 raise ValueError(f"negative {key}")
         if parsed["max_cost_basis_eur"] > parsed["initial_cash_eur"]:
             raise ValueError("allocation greater than cash")
-        return cls(parsed, hashlib.sha256(raw).hexdigest())
+        return cls(parsed, hashlib.sha256(raw.replace(b"\r\n", b"\n")).hexdigest())
 
     def __getitem__(self, key: str) -> object:
         return self.values[key]
