@@ -1,0 +1,10 @@
+[Unit]
+Description=ETH/EUR read-only collector health check every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=1min
+Unit=eth-eur-collector-health.service
+
+[Install]
+WantedBy=timers.target
