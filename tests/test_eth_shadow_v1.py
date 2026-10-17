@@ -239,6 +239,8 @@ class ShadowGridV1Tests(unittest.TestCase):
                     self.step(e)
         root = Path(__file__).resolve().parent.parent / "eth_shadow_v1"
         for py in root.glob("*.py"):
+            if py.name == "public_readonly.py":
+                continue  # Dedicated public GET-only transport, separately contract-tested.
             code = py.read_text(encoding="utf-8")
             self.assertNotIn("import revolut_x_client", code)
             self.assertNotIn("import requests", code)
