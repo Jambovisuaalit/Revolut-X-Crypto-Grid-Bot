@@ -35,7 +35,7 @@ class ShadowRunnerTests(unittest.TestCase):
         event = runner.evaluate(snapshot("1", "1.01", later), later)
         self.assertIn("DRAWDOWN_LIMIT_POST_FILL", event["reasons"])
         self.assertTrue(event["halted"])
-        self.assertEqual(runner.trades, 0)
+        self.assertEqual(runner.trades, 1)
 
     def test_restored_state_keeps_pending_order_and_hash(self):
         first = ShadowRunner()
