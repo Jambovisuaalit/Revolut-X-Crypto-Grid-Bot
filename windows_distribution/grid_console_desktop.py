@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 import http.client
 import json
 import os
+import re
 from pathlib import Path
 import sys
 from threading import Thread
@@ -24,7 +25,7 @@ import webbrowser
 from product_shell.server import local_server
 from product_shell.local_runtime_readonly import inspect_local_runtime
 
-SCHEMA = "grid-console-windows-gui-offline-v1"
+SCHEMA = "grid-console-windows-react-offline-v2"
 OFFLINE_REQUIRED = {
     "mode": "SHADOW_ONLY",
     "live_orders": "DISABLED",
@@ -51,10 +52,10 @@ def check_status(payload: dict[str, Any]) -> None:
         raise RuntimeError("STRATEGY_MUST_REMAIN_STOPPED")
 
 
-def status_through_loopback() -> dict[str, Any]:
+def status_through_loopback(supervisor_db: Path | None = None) -> dict[str, Any]:
     """Exercise existing HTTP route, including forbidden HTTP mutations."""
     assert_safe_env()
-    with local_server(None, 0) as server:
+    with local_server(None, 0, supervisor_db=supervisor_db, ui="react") as server:
         thread = Thread(target=server.serve_forever, daemon=True, name="grid-console-test-http")
         thread.start()
         try:
@@ -72,14 +73,37 @@ def status_through_loopback() -> dict[str, Any]:
             state = json.loads(body)
             check_status(state)
             runtime_code, runtime_body, _ = get("/api/runtime")
-            if runtime_code != 200 or json.loads(runtime_body).get("status") != "NOT_CONFIGURED":
+            if runtime_code != 200:
                 raise RuntimeError("LOCAL_RUNTIME_ENDPOINT_UNSAFE")
-            for route, expected_type in (("/", "text/html"), ("/app.js", "javascript"), ("/style.css", "text/css")):
-                status, content, meta = get(route)
-                if status != 200 or not content or expected_type not in meta.get("Content-Type", ""):
-                    raise RuntimeError("LOCAL_UI_ASSETS_UNAVAILABLE")
+            runtime = json.loads(runtime_body)
+            if runtime.get("schema") != "grid-console-local-runtime-v1" or (
+                runtime.get("provenance") != "LOCAL_SQLITE_NOT_EXCHANGE_VERIFIED" or
+                runtime.get("live_orders") != "DISABLED" or
+                runtime.get("account_connection") != "NOT_CONNECTED" or
+                runtime.get("reconciled_for_trading") is not False
+            ):
+                raise RuntimeError("LOCAL_RUNTIME_CONTRACT_UNSAFE")
+            if supervisor_db is None and runtime.get("status") != "NOT_CONFIGURED":
+                raise RuntimeError("UNEXPECTED_SUPERVISOR_STATE")
+            if supervisor_db is not None and runtime.get("status") in ("NOT_CONFIGURED", None):
+                raise RuntimeError("SUPERVISOR_DATABASE_NOT_READ")
+            index_code, html, html_headers = get("/")
+            if index_code != 200 or "text/html" not in html_headers.get("Content-Type", "") or b'id="root"' not in html:
+                raise RuntimeError("REACT_INDEX_UNAVAILABLE")
+            # Only hashed compiled JS/CSS is accepted. No legacy app.js fallback.
+            scripts = re.findall(rb'src="\\./assets/([A-Za-z0-9_.-]+\\.js)"', html)
+            styles = re.findall(rb'href="\\./assets/([A-Za-z0-9_.-]+\\.css)"', html)
+            if not scripts or not styles:
+                raise RuntimeError("REACT_COMPILED_ASSETS_MISSING")
+            for name, expected_type in [(x, "javascript") for x in scripts] + [(x, "text/css") for x in styles]:
+                route = "/assets/" + name.decode("ascii")
+                asset_status, content, meta = get(route)
+                if asset_status != 200 or not content or expected_type not in meta.get("Content-Type", ""):
+                    raise RuntimeError("REACT_COMPILED_ASSET_UNAVAILABLE")
+            if get("/app.js")[0] != 404 or get("/style.css")[0] != 404:
+                raise RuntimeError("LEGACY_ASSET_FALLBACK_FORBIDDEN")
             for method in ("POST", "PUT", "DELETE", "PATCH"):
-                for path in ("/api/status", "/api/runtime"):
+                for path in ("/api/status", "/api/runtime", "/"):
                     code, _, _ = get(path, method)
                     if code != 405:
                         raise RuntimeError("UNSAFE_HTTP_MUTATION_ENABLED")
@@ -90,7 +114,12 @@ def status_through_loopback() -> dict[str, Any]:
     return {
         "schema": SCHEMA,
         "status": "DEV_DESKTOP_PASS",
-        "ui": "GRID_CONSOLE_LOCAL_GUI",
+        "ui": "GRID_CONSOLE_REACT_LOCAL_GUI",
+        "runtime_status": runtime["status"],
+        "risk_lock": runtime["risk_lock"],
+        "uncertain_order_count": runtime["uncertain_order_count"],
+        "local_event_count": len(runtime["events"]),
+        "react_assets": len(scripts) + len(styles),
         "http_bind": "127.0.0.1",
         "local_assets": "VERIFIED",
         "account_connection": "NOT_CONNECTED",
@@ -109,7 +138,7 @@ def run_gui(*, open_browser: bool = True) -> int:
     import tkinter as tk
     from tkinter import filedialog, messagebox
 
-    server = local_server(None, 0)
+    server = local_server(None, 0, ui="react")
     url = f"http://127.0.0.1:{server.server_port}/"
     worker = Thread(target=server.serve_forever, daemon=True, name="grid-console-http")
     worker.start()
@@ -201,7 +230,7 @@ def run_gui(*, open_browser: bool = True) -> int:
                 )
                 return
             try:
-                next_server = local_server(None, 0, supervisor_db=candidate)
+                next_server = local_server(None, 0, supervisor_db=candidate, ui="react")
                 next_worker = Thread(target=next_server.serve_forever, daemon=True,
                                      name="grid-console-local-db-http")
                 next_worker.start()
@@ -243,14 +272,18 @@ def main(argv: list[str] | None = None) -> int:
                         help="Verify local HTML dashboard and GET-only routes; no GUI")
     parser.add_argument("--report", type=Path, default=None,
                         help="Write redacted self-test JSON to file")
+    parser.add_argument("--supervisor-db", type=Path, default=None,
+                        help="Offline SQLite fixture for --self-test only; never writes")
     parser.add_argument("--no-auto-browser", action="store_true",
                         help="Open browser only by clicking dashboard button")
     args = parser.parse_args(argv)
     if args.report is not None and not args.self_test:
         parser.error("--report is restricted to --self-test")
+    if args.supervisor_db is not None and not args.self_test:
+        parser.error("--supervisor-db is restricted to --self-test")
     try:
         if args.self_test:
-            result = status_through_loopback()
+            result = status_through_loopback(args.supervisor_db)
             if args.report is not None:
                 args.report.parent.mkdir(parents=True, exist_ok=True)
                 args.report.write_text(json.dumps(result, sort_keys=True, indent=2) + "\n",
