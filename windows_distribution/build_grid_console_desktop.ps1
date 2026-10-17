@@ -4,7 +4,9 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 if ($env:OS -ne 'Windows_NT') { throw 'WINDOWS_ONLY' }
 if (-not (Test-Path 'product_shell/assets/index.html')) { throw 'RUN_FROM_REPO_ROOT' }
-python -m PyInstaller --noconfirm --clean --onedir --windowed --name GridConsoleDesktop --distpath dist --workpath build --specpath build --paths . --add-data 'product_shell/assets;product_shell/assets' --add-data 'configs/eth_eur_grid_shadow_v1.toml;configs' windows_distribution/grid_console_desktop.py
+$assetDir=(Resolve-Path 'product_shell/assets').Path
+$configPath=(Resolve-Path 'configs/eth_eur_grid_shadow_v1.toml').Path
+python -m PyInstaller --noconfirm --clean --onedir --windowed --name GridConsoleDesktop --distpath dist --workpath build --specpath build --paths . --add-data "$assetDir;product_shell/assets" --add-data "$configPath;configs" windows_distribution/grid_console_desktop.py
 if ($LASTEXITCODE -ne 0) { throw 'GRID_DESKTOP_BUILD_FAILED' }
 $exe = 'dist/GridConsoleDesktop/GridConsoleDesktop.exe'
 if (-not (Test-Path -LiteralPath $exe)) { throw 'GRID_DESKTOP_EXE_MISSING' }
