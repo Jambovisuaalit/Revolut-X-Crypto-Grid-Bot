@@ -62,6 +62,27 @@ jobs:
         shell: pwsh
         run: |
           if (-not (Test-Path "dist/GridConsolePreview.exe")) { throw "Preview executable missing" }
+      - name: Verify preview binary starts locally and still disables trading
+        shell: pwsh
+        run: |
+          $proc = Start-Process -FilePath (Resolve-Path "dist/GridConsolePreview.exe").Path -ArgumentList @("--port", "18769", "--no-browser") -PassThru
+          try {
+            $ready = $false
+            for ($i = 0; $i -lt 40; $i++) {
+              Start-Sleep -Seconds 1
+              try {
+                $state = Invoke-RestMethod -Uri "http://127.0.0.1:18769/api/status" -TimeoutSec 2
+                if ($state.mode -eq "SHADOW_ONLY" -and $state.live_orders -eq "DISABLED" -and $state.account_connection -eq "NOT_CONNECTED") {
+                  $ready = $true
+                  break
+                }
+              } catch {}
+            }
+            if (-not $ready) { throw "Windows preview binary failed local smoke" }
+            Write-Host "PASS unsigned EXE launches local-only and remains NO-LIVE"
+          } finally {
+            taskkill /PID $proc.Id /T /F | Out-Null
+          }
       - name: Upload unsigned non-trading preview (not customer-ready)
         uses: actions/upload-artifact@v4
         with:
