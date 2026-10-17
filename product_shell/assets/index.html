@@ -74,6 +74,31 @@
         </section>
       </div>
 
+      <section class="panel runtime-panel" aria-labelledby="runtime-title">
+        <div class="panel-head">
+          <div><div class="eyebrow">PAIKALLISEN VALVOJAN KIRJANPITO</div>
+            <h2 id="runtime-title">Valvoja, riskilukitus ja tapahtumat</h2></div>
+          <span class="outline-pill">VAIN LUKU · EI PÖRSSIVARMENNETTU</span>
+        </div>
+        <p class="runtime-help">Näytetään vain käyttäjän valitsemaan paikalliseen SQLite-tiedostoon tallennettu tila.
+          Tiedosto ei ole yhteys Revolut X -tiliin. Tapahtumien lukeminen ei käynnistä kaupankäyntiä.</p>
+        <div class="runtime-summary" aria-label="Valvojan paikalliset tiedot">
+          <div><span>Valvojan tallennettu tila</span><strong id="runtime-state">Ei tietokantaa</strong></div>
+          <div><span>Riskilukitus</span><strong id="runtime-risk">Ei varmennettu</strong></div>
+          <div><span>Viimeinen heartbeat</span><strong id="runtime-heartbeat">Ei saatavilla</strong></div>
+          <div><span>Peruutuksen varmennus</span><strong id="runtime-cancellation">Ei varmennettu</strong></div>
+          <div><span>Epävarmat toimeksiannot</span><strong id="runtime-uncertain">—</strong></div>
+        </div>
+        <p id="runtime-reason" class="runtime-reason" role="status">Paikallista valvojan kirjanpitoa ei ole valittu.</p>
+        <div class="runtime-events">
+          <h3>Viimeisimmät paikalliset tapahtumamerkinnät</h3>
+          <p id="runtime-events-note">Toimeksiannot ja toteutukset näkyvät vain, jos paikallisessa tietokannassa on merkintöjä.</p>
+          <ol id="runtime-event-list" class="runtime-event-list" aria-live="polite">
+            <li>Ei tapahtumamerkintöjä.</li>
+          </ol>
+        </div>
+      </section>
+
       <section class="panel onboarding" aria-labelledby="onboard-title">
         <div class="panel-head"><div><div class="eyebrow">ENSIMMÄISET VAIHEET</div><h2 id="onboard-title">Aloita hallitusti</h2></div><span class="outline-pill">VAIHE 1 / 4</span></div>
         <div class="steps">
