@@ -75,6 +75,8 @@ class ShadowGridV1Tests(unittest.TestCase):
     def test_FILL_03_04_sell_only_owned_and_net_cost(self) -> None:
         self.step(self.events[0])
         self.assertEqual(self.step(self.events[3])["fills"], [])
+        self.state = fresh_state(self.cfg)  # restart independent test chronology
+        self.step(self.events[0])
         self.step(self.events[1])
         self.step(self.events[2])
         self.step(self.events[3])
