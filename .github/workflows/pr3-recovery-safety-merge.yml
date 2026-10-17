@@ -1,0 +1,52 @@
+name: PR3 and Process Recovery - Safe Integration Gate
+on:
+  push:
+    branches:
+      - integration/pr3-process-recovery-safe
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  integrated-safety:
+    name: integration-safety (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      LIVE_TRADING: "false"
+      DRY_RUN: "true"
+      PYTHONPATH: ${{ github.workspace }}
+      CI_HEAD_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install locked-family runtime dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Compile production and integration sources
+        run: python -m compileall -q bot_main.py grid_executor.py precision_engine.py revolut_x_client.py scripts tests
+      - name: Full offline unit and failure injection matrix
+        run: python -m unittest discover -s tests -v
+      - name: Explicit cancellation verification test suite
+        run: python -m unittest tests.test_cancellation_gate -v
+      - name: Persisted kill-switch drawdown / restart integration (mock exchange)
+        run: python scripts/drawdown_integration.py
+      - name: Hard process exit / restart / idempotency integration (mock exchange)
+        run: python scripts/process_recovery_integration.py
+      - name: Strict report verification and commit-linked verdict
+        if: success()
+        run: python scripts/check_pr3_recovery_gate.py --report-dir recovery-artifacts --commit-sha ${{ github.sha }}
+      - name: Upload all raw evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr3-recovery-safe-merge-${{ matrix.os }}
+          path: recovery-artifacts/*.json
+          if-no-files-found: warn
