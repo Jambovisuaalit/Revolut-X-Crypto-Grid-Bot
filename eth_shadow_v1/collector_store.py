@@ -178,7 +178,7 @@ class CollectorStore:
                     summary.get("bid_depth_eur") if summary else None,
                     summary.get("ask_depth_eur") if summary else None,
                     self._info("initial_pair_hash"), prev, entry_hash,
-                    canonical(sample) if accepted else None,
+                    canonical({"sample": sample, "payload": payload}) if accepted else None,
                 ))
             self._set("last_poll_ms", str(now_ms))
             if accepted:
