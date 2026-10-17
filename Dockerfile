@@ -6,7 +6,7 @@ RUN apt-get update \
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY revolut_x_client.py precision_engine.py grid_executor.py bot_main.py ./
+COPY revolut_x_client.py precision_engine.py grid_executor.py bot_main.py supervisor_runtime.py ./
 ENV LIVE_TRADING=false PYTHONUNBUFFERED=1
-CMD ["python", "bot_main.py"]
+CMD ["python", "bot_main.py", "--help"]
 

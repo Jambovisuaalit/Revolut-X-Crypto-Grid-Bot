@@ -110,3 +110,136 @@ def live_trading_enabled() -> bool:
     """Return true only for the explicit opt-in environment value ``true``."""
     return os.environ.get("LIVE_TRADING", "false").strip().lower() == "true"
 
+
+
+
+def offline_main(argv: list[str] | None = None) -> int:
+    """Explicit, bounded fixture CLI; never constructs the exchange client."""
+    import argparse
+    import json
+    import pathlib
+    import sys
+    import time
+
+    from supervisor_runtime import OfflineFixtureSource, SupervisorRuntime
+
+    parser = argparse.ArgumentParser(
+        description="GridBotSupervisor offline lifecycle ONLY. No API, no live orders."
+    )
+    parser.add_argument("--offline-fixture", action="store_true",
+                        help="Required explicit synthetic-only execution mode")
+    parser.add_argument("--db", type=pathlib.Path, required=False,
+                        help="Dedicated NEW/fixture-only SQLite path, never production bot_state.db")
+    parser.add_argument("--ticks", type=int, default=3,
+                        help="Bounded observations (1..1000), never daemon mode")
+    parser.add_argument("--interval-ms", type=int, default=100,
+                        help="Delay between fixture observations, 0..10000")
+    parser.add_argument("--fixture-equity", type=str, default="1000",
+                        help="Synthetic EUR balance, not customer money")
+    parser.add_argument("--report", type=pathlib.Path)
+    args = parser.parse_args(argv)
+    if not args.offline_fixture or args.db is None:
+        parser.error("--offline-fixture and --db must both be explicitly supplied")
+    if not 1 <= args.ticks <= 1000 or not 0 <= args.interval_ms <= 10000:
+        parser.error("invalid bounded ticks or interval")
+    if args.db.name.lower() in ("bot_state.db", "collector.sqlite"):
+        parser.error("refusing live or collector DB filename")
+    if live_trading_enabled() or os.getenv("LIVE_TRADING","false").strip().lower() != "false":
+        parser.error("LIVE_TRADING must be false")
+    try:
+        equity = Decimal(args.fixture_equity)
+    except Exception:
+        parser.error("fixture equity must be Decimal")
+    if not equity.is_finite() or equity <= 0:
+        parser.error("fixture equity must be positive")
+
+    # Read-only fake venue: active order reconciliation is still exercised;
+    # this CLI has *no authenticated exchange client*, not even via imports.
+    class OfflineVenue:
+        def get_open_orders(self) -> list:
+            return []
+
+        def get_historical_orders(self) -> list:
+            return []
+
+        def place_order(self, *_args, **_kwargs) -> None:
+            raise RuntimeError("OFFLINE_ORDERS_FORBIDDEN")
+
+        def replace_order(self, *_args, **_kwargs) -> None:
+            raise RuntimeError("OFFLINE_REPLACE_FORBIDDEN")
+
+        def cancel_all_orders(self) -> None:
+            raise RuntimeError("OFFLINE_CANCEL_FORBIDDEN")
+
+    # Explicit safety check before GridExecutor can create/alter any schema.
+    # An existing file without the offline marker may belong to another bot.
+    if args.db.exists():
+        import sqlite3
+        from contextlib import closing
+        try:
+            with closing(sqlite3.connect(f"file:{args.db.resolve().as_posix()}?mode=ro", uri=True)) as connection:
+                marker=connection.execute(
+                    "SELECT value FROM bot_metadata WHERE key='supervisor_runtime_kind'"
+                ).fetchone()
+                if marker is None or marker[0] != "SYNTHETIC_OFFLINE_ONLY":
+                    print("BLOCKED: existing DB is not an offline fixture", file=sys.stderr)
+                    return 2
+                occupied=connection.execute("SELECT COUNT(*) FROM order_lineage").fetchone()[0]
+                if occupied:
+                    print("BLOCKED: existing DB contains order history", file=sys.stderr)
+                    return 2
+        except sqlite3.Error:
+            print("BLOCKED: existing DB could not be verified", file=sys.stderr)
+            return 2
+    args.db.parent.mkdir(parents=True, exist_ok=True)
+    from grid_executor import GridExecutor
+    executor = GridExecutor(OfflineVenue(), {}, database_path=str(args.db), live_trading=False)
+    try:
+        # Never use fixture controller on an existing real order journal.
+        existing = executor.connection.execute("SELECT COUNT(*) FROM order_lineage").fetchone()[0]
+        if existing:
+            print("BLOCKED: fixture runner refuses a DB with order history", file=sys.stderr)
+            return 2
+        mode = executor.connection.execute(
+            "SELECT value FROM bot_metadata WHERE key='supervisor_runtime_kind'"
+        ).fetchone()
+        if mode is not None and mode[0] != "SYNTHETIC_OFFLINE_ONLY":
+            print("BLOCKED: DB belongs to a different runtime", file=sys.stderr)
+            return 2
+        with executor._write_transaction():
+            executor.connection.execute(
+                "INSERT INTO bot_metadata(key,value) VALUES ('supervisor_runtime_kind','SYNTHETIC_OFFLINE_ONLY') "
+                "ON CONFLICT(key) DO NOTHING"
+            )
+        clock = lambda: time.time_ns() // 1_000_000
+        supervisor = GridBotSupervisor(executor, "EUR")
+        runtime = SupervisorRuntime(
+            supervisor, OfflineFixtureSource(clock, equity), clock_ms=clock
+        )
+        report = runtime.run_bounded(
+            args.ticks, poll_interval_seconds=args.interval_ms / 1000
+        )
+    finally:
+        executor.close()
+
+    if args.report:
+        # A report is evidence only for the offline fixture and never claims live readiness.
+        import tempfile
+        args.report.parent.mkdir(parents=True, exist_ok=True)
+        tmp = args.report.with_name(args.report.name + ".tmp")
+        try:
+            with tmp.open("w", encoding="utf-8") as handle:
+                json.dump(report, handle, sort_keys=True, indent=2)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, args.report)
+        finally:
+            if tmp.exists():
+                tmp.unlink()
+    print(json.dumps(report, sort_keys=True))
+    return 0 if report["result"] == "PASS" else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(offline_main())
