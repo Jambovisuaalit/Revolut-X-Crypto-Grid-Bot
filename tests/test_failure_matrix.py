@@ -341,5 +341,200 @@ class WireContracts(unittest.TestCase):
                     self.assertEqual(session.request.call_count, 1)
 
 
+
+class FileVenue(FakeClient):
+    """Disk-backed fake venue survives real os._exit() in a child process."""
+
+    def __init__(self, state_path, crash=None):
+        super().__init__()
+        self.state_path = Path(state_path)
+        self.crash = crash
+        if self.state_path.exists():
+            import json
+            state = json.loads(self.state_path.read_text())
+            self.active, self.history = state["active"], state["history"]
+
+    def _save(self):
+        import json, os
+        with self.state_path.open("w", encoding="utf8") as out:
+            json.dump({"active": self.active, "history": self.history}, out)
+            out.flush()
+            os.fsync(out.fileno())
+
+    def place_order(self, payload):
+        import os
+        result = super().place_order(payload)
+        self._save()
+        if self.crash == "POST":
+            os._exit(71)
+        return result
+
+    def replace_order(self, venue_order_id, payload):
+        import os
+        result = super().replace_order(venue_order_id, payload)
+        self._save()
+        if self.crash == "PUT":
+            os._exit(72)
+        return result
+
+    def get_order(self, venue_order_id):
+        import os
+        result = super().get_order(venue_order_id)
+        if self.crash in ("GET_POST", "GET_PUT"):
+            os._exit(73)
+        return result
+
+
+def crash_worker(db, state_path, operation, cid, parent_id=None):
+    import os
+    venue = FileVenue(state_path, crash=operation)
+    executor = GridExecutor(venue, {"BTC/USD": rules()}, database_path=db, live_trading=True)
+    executor.reconcile_open_orders()
+    if operation == "BEFORE_POST":
+        executor._assert_dispatch_allowed = lambda *args: os._exit(74)
+    if operation == "BEFORE_PUT":
+        executor._assert_dispatch_allowed = lambda *args: os._exit(75)
+    if parent_id is None:
+        executor.create_order(
+            client_order_id=cid, symbol="BTC/USD", side="buy",
+            price=Decimal("100"), quantity=Decimal("0.01"),
+            free_balances={"USD": Decimal("100000")},
+        )
+    else:
+        executor.replace_order(
+            parent_id, new_price=Decimal("101"),
+            client_order_id=cid, free_balances={"USD": Decimal("100000")},
+        )
+
+
+class HardProcessCrashTests(unittest.TestCase):
+    """Real process termination, not a caught Python exception."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = str(Path(self.tmp.name) / "state.sqlite")
+        self.snapshot = str(Path(self.tmp.name) / "venue.json")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _crash(self, operation, cid, parent_id=None):
+        import multiprocessing
+        context = multiprocessing.get_context("spawn")
+        proc = context.Process(
+            target=crash_worker,
+            args=(self.db, self.snapshot, operation, cid, parent_id),
+        )
+        proc.start()
+        proc.join(timeout=12)
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(timeout=5)
+            self.fail("child process did not terminate")
+        self.assertIn(proc.exitcode, (71, 72, 73, 74, 75))
+        return FileVenue(self.snapshot)
+
+    def _reconcile(self, venue):
+        executor = GridExecutor(venue, {"BTC/USD": rules()},
+                                database_path=self.db, live_trading=True)
+        try:
+            executor.reconcile_open_orders()
+        except BaseException:
+            executor.close()
+            raise
+        return executor
+
+    def _parent(self):
+        venue = FileVenue(self.snapshot)
+        executor = self._reconcile(venue)
+        result = executor.create_order(
+            client_order_id=uid(), symbol="BTC/USD", side="buy",
+            price=Decimal("100"), quantity=Decimal("0.01"),
+            free_balances={"USD": Decimal("100000")},
+        )
+        executor.close()
+        return result["venue_order_id"]
+
+    def test_actual_process_death_pre_post_never_replays_unsafe_intent(self):
+        cid = uid()
+        venue = self._crash("BEFORE_POST", cid)
+        self.assertEqual(len(venue.active), 0)
+        with self.assertRaises(ReconciliationError):
+            self._reconcile(venue)
+
+    def test_actual_process_death_after_venue_accepts_post_reconciles(self):
+        for mode in ("POST", "GET_POST"):
+            with self.subTest(mode=mode):
+                # Isolate subprocess tests from one another.
+                with tempfile.TemporaryDirectory() as tmp:
+                    db = str(Path(tmp) / "db.sqlite")
+                    state = str(Path(tmp) / "venue.json")
+                    cid = uid()
+                    import multiprocessing
+                    ctx = multiprocessing.get_context("spawn")
+                    p = ctx.Process(target=crash_worker, args=(db, state, mode, cid))
+                    p.start()
+                    p.join(12)
+                    self.assertEqual(p.exitcode, 71 if mode == "POST" else 73)
+                    venue = FileVenue(state)
+                    exe = GridExecutor(venue, {"BTC/USD": rules()},
+                                       database_path=db, live_trading=True)
+                    try:
+                        exe.reconcile_open_orders()
+                        row = exe.connection.execute(
+                            "SELECT status FROM order_lineage WHERE client_order_id=?", (cid,)
+                        ).fetchone()
+                        self.assertEqual(row["status"], "new")
+                        self.assertEqual(len(venue.active), 1)
+                    finally:
+                        exe.close()
+
+    def test_actual_process_death_pre_put_blocks_and_preserves_parent(self):
+        parent = self._parent()
+        child = uid()
+        venue = self._crash("BEFORE_PUT", child, parent)
+        self.assertEqual(len(venue.active), 1)
+        with self.assertRaises(ReconciliationError):
+            self._reconcile(venue)
+
+    def test_actual_process_death_after_put_is_reconciled_without_reissue(self):
+        for mode in ("PUT", "GET_PUT"):
+            with self.subTest(mode=mode):
+                # Each scenario gets a fresh persistent database.
+                with tempfile.TemporaryDirectory() as tmp:
+                    db = str(Path(tmp) / "db.sqlite")
+                    state = str(Path(tmp) / "venue.json")
+                    venue = FileVenue(state)
+                    exe = GridExecutor(venue, {"BTC/USD": rules()},
+                                       database_path=db, live_trading=True)
+                    exe.reconcile_open_orders()
+                    parent = exe.create_order(
+                        client_order_id=uid(), symbol="BTC/USD", side="buy",
+                        price=Decimal("100"), quantity=Decimal("0.01"),
+                        free_balances={"USD": Decimal("100000")},
+                    )["venue_order_id"]
+                    exe.close()
+                    import multiprocessing
+                    ctx = multiprocessing.get_context("spawn")
+                    cid = uid()
+                    p = ctx.Process(target=crash_worker,
+                                    args=(db, state, mode, cid, parent))
+                    p.start()
+                    p.join(12)
+                    self.assertEqual(p.exitcode, 72 if mode == "PUT" else 73)
+                    recovered = FileVenue(state)
+                    exe = GridExecutor(recovered, {"BTC/USD": rules()},
+                                       database_path=db, live_trading=True)
+                    try:
+                        exe.reconcile_open_orders()
+                        child_row = exe.connection.execute(
+                            "SELECT status FROM order_lineage WHERE client_order_id=?", (cid,)
+                        ).fetchone()
+                        self.assertEqual(child_row["status"], "new")
+                        self.assertEqual(len(recovered.active), 1)
+                        self.assertEqual(len(recovered.history), 1)
+                    finally:
+                        exe.close()
+
 if __name__ == "__main__":
     unittest.main()
