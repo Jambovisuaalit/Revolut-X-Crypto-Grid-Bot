@@ -1,7 +1,7 @@
 name: Grid Console v0.5 - Windows Offline Development Installer
 on:
   push:
-    branches: [feat/grid-console-v05]
+    branches: [feat/grid-console-v05-shadow-workspace]
     paths:
       - '.github/workflows/grid-console-v05-windows.yml'
       - 'frontend/**'
