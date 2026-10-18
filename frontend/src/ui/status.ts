@@ -8,7 +8,7 @@ const values: Record<LocalRuntime["status"], Omit<Presentation,"technical">> = {
   RECONCILING: { title:"Paikallinen selvitys kesken",description:"Tallennettuja tapahtumia tarkastetaan; pörssin nykytilaa ei ole varmennettu.",action:"Älä tulkitse tätä kaupankäyntivalmiudeksi.",tone:"warning" },
   OFFLINE_MONITORING: { title:"Offline-valvonta",description:"Vain paikallinen tilatieto; ei pörssivarmennusta.",action:"Seuraa tietojen ikää ja epävarmoja tapahtumia.",tone:"neutral" },
   BLOCKED: { title:"Valvonta estetty",description:"Valvojan turvallista toimintatilaa ei voida vahvistaa.",action:"Tarkista diagnostiikka ja paikallinen data.",tone:"danger" },
-  RISK_LOCKED: { title:"Riskilukitus aktiivinen",description:"Paikallinen pysyvä turvalukitus on lauennut.",action:"Älä nollaa lukitusta. Selvitä syy offline-tilassa.",tone:"danger" }
+  RISK_LOCKED: { title:"Valvoja lukittu riskirajan vuoksi",description:"Paikallinen pysyvä turvalukitus on lauennut.",action:"Älä nollaa lukitusta. Selvitä syy offline-tilassa.",tone:"danger" }
 };
 export function statusPresentation(status: LocalRuntime["status"] | null): Presentation {
   if (!status) return {title:"Tila tuntematon",description:"Paikallista tilaa ei voitu vahvistaa.",action:"Tarkista yhteys ja yritä päivitystä.",tone:"warning",technical:"UNKNOWN"};
