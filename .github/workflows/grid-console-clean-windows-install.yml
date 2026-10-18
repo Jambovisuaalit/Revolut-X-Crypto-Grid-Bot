@@ -5,6 +5,10 @@ on:
     paths:
       - '.github/workflows/grid-console-clean-windows-install.yml'
       - 'windows_distribution/Test-CleanWindowsInstall.ps1'
+  pull_request:
+    paths:
+      - '.github/workflows/grid-console-clean-windows-install.yml'
+      - 'windows_distribution/Test-CleanWindowsInstall.ps1'
   workflow_dispatch:
 permissions:
   contents: read
