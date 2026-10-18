@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from eth_shadow_v1.offsite_backup import (
+from scripts.offsite_backup_transport import (
     check_scratch_separate, ensure_destination, offsite_backup, snapshot_to_scratch,
 )
 from eth_shadow_v1.capacity_preflight import assess_24h_capacity
