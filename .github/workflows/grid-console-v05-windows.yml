@@ -7,6 +7,9 @@ on:
       - 'frontend/**'
       - 'windows_distribution/**'
       - 'product_shell/**'
+      - 'tests/**'
+      - 'eth_shadow_v1/**'
+      - 'scripts/run_eth_eur_shadow.py'
   workflow_dispatch:
 permissions:
   contents: read
