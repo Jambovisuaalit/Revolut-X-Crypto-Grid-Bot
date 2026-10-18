@@ -5,6 +5,7 @@ import { statusPresentation,riskPresentation,heartbeatPresentation,tradingPresen
 import StatusPanel from "./ui/StatusPanel";
 import MetricPanel from "./ui/MetricPanel";
 import EventsPanel from "./ui/EventsPanel";
+import ShadowWorkspace from "./shadow/ShadowWorkspace";
 import "./app.css";
 export default function App() {
  const [runtime,setRuntime]=useState<LocalRuntime|null>(null);
@@ -49,6 +50,7 @@ export default function App() {
    <p className={blocked?"danger":"muted"}>{blocked?"Estetty tai turvallista tilaa ei voida vahvistaa":"Paikallinen tallennettu tila — ei pörssivarmennettu"}</p>
    <p className="muted">Tuntematon riskitila ei tarkoita riskilukituksen puuttumista.</p>
   </section>
+  <ShadowWorkspace refreshKey={refreshKey}/>
   <EventsPanel events={runtime?.events??[]}/>
   <details className="panel diagnostics"><summary>Tekniset arvot ja diagnostiikka</summary><dl>
    <dt>Valvojan tekninen tila</dt><dd>{runtime?.status??"UNKNOWN"}</dd>
