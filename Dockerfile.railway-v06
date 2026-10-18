@@ -1,0 +1,11 @@
+# Revolut X v0.6 public-data pilot ONLY. Never use production trading Dockerfile.
+FROM python:3.11-slim
+WORKDIR /app
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 LIVE_TRADING=false
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+COPY eth_shadow_v1/ /app/eth_shadow_v1/
+COPY scripts/ /app/scripts/
+COPY configs/ /app/configs/
+# Inert by default: does not arm, contact an exchange, or run the collector.
+CMD ["python", "-m", "scripts.railway_24h_pilot", "status", "--data-dir", "/data"]
