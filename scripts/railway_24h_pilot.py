@@ -165,7 +165,7 @@ def finish(root: Path, state: dict, *, reason: str, now: int) -> dict:
     backup_error = None
     if db.is_file():
         try:
-            from eth_shadow_v1.offsite_backup import offsite_backup
+            from scripts.offsite_backup_transport import offsite_backup
             # Scratch archive is automatically removed; NEVER duplicate SQLite
             # on /data. Remote receipt remains pending independent restore QA.
             backup = offsite_backup(db)
