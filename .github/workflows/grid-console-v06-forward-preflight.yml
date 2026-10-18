@@ -1,0 +1,35 @@
+name: Grid Console v0.6 - Forward Preflight Offline
+on:
+  push:
+    branches: [feat/grid-console-v06-forward-validation]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  preflight:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      LIVE_TRADING: 'false'
+      ACCOUNT_NETWORK_TESTS: DISABLED
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Offline 24h quality preflight
+        run: python -m unittest tests.test_forward_preflight_v06 -v
+      - name: Existing shadow engine regression
+        run: python -m unittest tests.test_eth_shadow_v1 tests.test_shadow_readonly_workspace -v
+      - name: Prevent changes to trading and collector implementation
+        shell: bash
+        run: |
+          git fetch origin feat/grid-console-v05-shadow-workspace
+          git diff --exit-code origin/feat/grid-console-v05-shadow-workspace HEAD -- grid_executor.py shadow_runner.py eth_shadow_v1/collector.py eth_shadow_v1/collector_store.py eth_shadow_v1/engine.py
