@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from contextlib import closing
 from tempfile import TemporaryDirectory
 from unittest import TestCase
 import sqlite3
@@ -43,8 +44,9 @@ class ForwardPreflightTests(TestCase):
     def test_malformed_db_fails_closed_and_is_not_rewritten(self):
         with TemporaryDirectory() as folder:
             path = Path(folder) / "malformed.sqlite"
-            with sqlite3.connect(path) as db:
+            with closing(sqlite3.connect(path)) as db:
                 db.execute("CREATE TABLE fake (id INTEGER)")
+                db.commit()
             before = path.read_bytes()
             result = inspect_forward_preflight(path, NOW)
             self.assertEqual(result["status"], "BLOCKED")
