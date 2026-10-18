@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from contextlib import closing
 from tempfile import TemporaryDirectory
 import sqlite3
 import unittest
@@ -82,19 +83,21 @@ class ShadowReadonlyTests(unittest.TestCase):
         )
 
     def test_modified_indexed_fill_fails_closed(self):
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db:
             row = db.execute("SELECT fill_id, details_json FROM synthetic_fills LIMIT 1").fetchone()
             details = __import__("json").loads(row[1])
             details["fee_eur"] = "123.45"
             db.execute("UPDATE synthetic_fills SET details_json=? WHERE fill_id=?",
                        (__import__("json").dumps(details), row[0]))
+            db.commit()
         blocked = inspect_shadow_journal(self.path)
         self.assertEqual(blocked["status"], "BLOCKED")
         self.assertIsNone(blocked["equity_eur"])
 
     def test_corruption_fails_closed_without_balance_leak(self):
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db:
             db.execute("UPDATE decisions SET state_json=? WHERE seq=1", ('{"tampered":true}',))
+            db.commit()
         view = inspect_shadow_journal(self.path)
         self.assertEqual(view["status"], "BLOCKED")
         self.assertIsNone(view["equity_eur"])
@@ -102,8 +105,9 @@ class ShadowReadonlyTests(unittest.TestCase):
 
     def test_non_shadow_schema_is_not_misidentified(self):
         other = Path(self.temp.name) / "supervisor.sqlite"
-        with sqlite3.connect(other) as db:
+        with closing(sqlite3.connect(other)) as db:
             db.execute("CREATE TABLE bot_metadata(key TEXT, value TEXT)")
+            db.commit()
         view = inspect_shadow_journal(other)
         self.assertEqual(view["status"], "BLOCKED")
         self.assertIsNone(view["total_pnl_eur"])
