@@ -2,6 +2,7 @@ import {useEffect,useState} from "react";
 import {fetchShadowView} from "./client";
 import type {ShadowView} from "./contracts";
 import MetricPanel from "../ui/MetricPanel";
+import EquitySparkline from "./EquitySparkline";
 function metric(v:string|null,unit:string):string {return v===null?"—":v+" "+unit;}
 export default function ShadowWorkspace({refreshKey}:{refreshKey:number}){
  const [data,setData]=useState<ShadowView|null>(null);
@@ -33,6 +34,7 @@ export default function ShadowWorkspace({refreshKey}:{refreshKey:number}){
     <MetricPanel label="Realisoitumaton · simuloitu" value={metric(data.unrealized_pnl_eur,"€")} note="Konservatiivinen realisointiarvio"/>
     <MetricPanel label="Maksimidrawdown · simuloitu" value={metric(data.max_drawdown_eur,"€")} note="Kova riskiraja 30 €"/>
    </div>
+   <EquitySparkline history={data.equity_history}/>
    <div className={data.hard_stop_triggered?"shadow-risk danger":"shadow-risk"}>
     <strong>Riskitila: {data.risk_state}</strong><p>{data.hard_stop_triggered?"Virtuaalinen HARD STOP lauennut — tila on pysäytetty.":"Paikallinen shadow-riskitila; ei oikean tilin turvatakuu."}</p>
    </div>
