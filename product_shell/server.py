@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 
 from eth_shadow_v1.collector_quality import evaluate_quality
 from product_shell.local_runtime_readonly import inspect_local_runtime
+from product_shell.shadow_readonly import inspect_shadow_journal
 from product_shell.react_assets import load_react_assets
 from eth_shadow_v1.config import Config
 
@@ -68,7 +69,8 @@ def snapshot(db_path: Path | None, now_ms: int) -> dict:
 
 
 def make_handler(db_path: Path | None, clock, supervisor_db: Path | None = None,
-                 *, ui: str = "legacy", react_root: Path | None = None) -> type[BaseHTTPRequestHandler]:
+                 *, ui: str = "legacy", react_root: Path | None = None,
+                 shadow_db: Path | None = None) -> type[BaseHTTPRequestHandler]:
     """Inject read-only dependencies without global mutation."""
     if ui not in ("legacy", "react"):
         raise ValueError("UNKNOWN_UI_MODE")
@@ -119,6 +121,11 @@ def make_handler(db_path: Path | None, clock, supervisor_db: Path | None = None,
             if path.query or path.fragment:
                 self._serve(b"Invalid path", "text/plain; charset=utf-8", 400, head=head)
                 return
+            if path.path == "/api/shadow":
+                data = json.dumps(inspect_shadow_journal(shadow_db),
+                                  sort_keys=True, ensure_ascii=False).encode("utf-8")
+                self._serve(data, "application/json; charset=utf-8", head=head)
+                return
             if path.path == "/api/runtime":
                 data = json.dumps(inspect_local_runtime(supervisor_db, clock()),
                                   sort_keys=True, ensure_ascii=False).encode("utf-8")
@@ -160,11 +167,13 @@ def make_handler(db_path: Path | None, clock, supervisor_db: Path | None = None,
 
 def local_server(db_path: Path | None = None, port: int = 0, *,
                  clock=None, supervisor_db: Path | None = None,
-                 ui: str = "legacy", react_root: Path | None = None) -> ThreadingHTTPServer:
+                 ui: str = "legacy", react_root: Path | None = None,
+                 shadow_db: Path | None = None) -> ThreadingHTTPServer:
     """Bind *only* to loopback. Never allow LAN/internet hosting."""
     import time
     handler = make_handler(db_path, clock or (lambda: time.time_ns() // 1_000_000),
-                           supervisor_db, ui=ui, react_root=react_root)
+                           supervisor_db, ui=ui, react_root=react_root,
+                           shadow_db=shadow_db)
     server = ThreadingHTTPServer(("127.0.0.1", port), handler)
     server.daemon_threads = True
     return server
