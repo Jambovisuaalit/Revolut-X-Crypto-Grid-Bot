@@ -149,14 +149,24 @@ def run(root: Path) -> int:
         with ContinuousReadOnlyCollector(config, root / "collector.sqlite") as collector:
             collector.store.acquire(utc_ms())
             try:
+                next_tick = time.monotonic()
                 while True:
                     now = utc_ms()
                     if now >= state["deadline_at_ms"]:
                         reason = "DEADLINE"
                         break
+                    # A 5-second cadence is measured from poll START, not
+                    # request completion; never add HTTP latency to each slot.
                     collector.poll()
-                    # Sleep only until next slot or absolute deadline; never catch up.
-                    wait_ms = min(POLL_MS, max(0, state["deadline_at_ms"] - utc_ms()))
+                    next_tick += POLL_MS / 1000
+                    now_mono = time.monotonic()
+                    if next_tick < now_mono:
+                        # Skip missed ticks; do not create catch-up snapshots.
+                        next_tick = now_mono
+                    wait_ms = min(
+                        max(0, int((next_tick - now_mono) * 1000)),
+                        max(0, state["deadline_at_ms"] - utc_ms()),
+                    )
                     if wait_ms:
                         time.sleep(wait_ms / 1000)
             finally:
