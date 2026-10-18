@@ -10,7 +10,7 @@ import sqlite3
 import unittest
 from unittest.mock import patch
 
-from scripts.railway_24h_pilot import DURATION_MS, arm, begin_once, finish, read_state, sqlite_backup
+from scripts.railway_24h_pilot import DURATION_MS, arm, begin_once, finish, read_state, sqlite_backup, status_probe
 
 NOW = 1800000000000
 FLAGS = {"LIVE_TRADING": "false", "EXPLICIT_PUBLIC_GET_APPROVAL": "I_APPROVE_PUBLIC_GET_24H"}
@@ -25,6 +25,34 @@ class BoundedPilotTests(unittest.TestCase):
         self.flag_patch = patch.dict(os.environ, FLAGS)
         self.flag_patch.start()
         self.addCleanup(self.flag_patch.stop)
+
+    def test_local_volume_probe_writes_and_removes_only_probe_file(self):
+        result = status_probe(self.root)
+        self.assertEqual(result["schema"], "railway-v06-volume-probe-v1")
+        self.assertTrue(result["writable"])
+        self.assertGreater(result["total_bytes"], 0)
+        self.assertGreaterEqual(result["free_bytes"], 0)
+        self.assertEqual(result["reserve_pass"], result["free_bytes"] >= 256 * 1024 * 1024)
+        self.assertFalse(result["backup_capacity_verified"])
+        self.assertEqual([p for p in self.root.iterdir() if p.name.startswith(".volume-probe-")], [])
+        self.assertFalse((self.root / "collector.sqlite").exists())
+
+    def test_missing_volume_is_blocked_no_directory_created(self):
+        missing = self.root / "no-mount"
+        probe = status_probe(missing)
+        self.assertEqual(probe["status"], "BLOCKED")
+        self.assertEqual(probe["reason"], "MOUNT_MISSING_OR_SYMLINK")
+        self.assertFalse(missing.exists())
+
+    def test_volume_reserve_never_claims_backup_capacity(self):
+        from unittest.mock import Mock
+        from scripts import railway_24h_pilot as pilot
+        with patch.object(pilot.shutil, "disk_usage", return_value=Mock(total=500_000_000, used=300_000_000, free=200_000_000)):
+            probe = status_probe(self.root)
+        self.assertEqual(probe["status"], "BLOCKED")
+        self.assertEqual(probe["reason"], "INSUFFICIENT_FREE_SPACE")
+        self.assertFalse(probe["reserve_pass"])
+        self.assertFalse(probe["backup_capacity_verified"])
 
     def test_approval_required_and_no_implicit_run(self):
         with patch.dict(os.environ, {"EXPLICIT_PUBLIC_GET_APPROVAL": ""}):
