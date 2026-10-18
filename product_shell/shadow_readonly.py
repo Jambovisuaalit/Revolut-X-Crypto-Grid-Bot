@@ -90,6 +90,7 @@ def _project(db: sqlite3.Connection, cfg: Config) -> dict:
     history = []
     recent_fills = []
     fill_ids = set()
+    expected_fills = {}
     fill_count = 0
     fees_from_fills = D("0")
     last_state = None
@@ -127,6 +128,7 @@ def _project(db: sqlite3.Connection, cfg: Config) -> dict:
             if fill_id in fill_ids:
                 raise ValueError("SHADOW_DUPLICATE_FILL")
             fill_ids.add(fill_id)
+            expected_fills[fill_id] = digest(fill)
             side = fill["side"]
             if side not in ("BUY", "SELL", "SELL_HARD_STOP"):
                 raise ValueError("SHADOW_FILL_SIDE_INVALID")
@@ -154,7 +156,8 @@ def _project(db: sqlite3.Connection, cfg: Config) -> dict:
         if fill_id not in fill_ids:
             raise ValueError("SHADOW_FILL_INDEX_MISMATCH")
         details = json.loads(details_json)
-        if details.get("fill_id") != fill_id or details.get("event_id") != event_id or details.get("synthetic") is not True:
+        if (details.get("fill_id") != fill_id or details.get("event_id") != event_id or
+                details.get("synthetic") is not True or digest(details) != expected_fills[fill_id]):
             raise ValueError("SHADOW_FILL_INDEX_MISMATCH")
     if _decimal(last_state["fees"], nonnegative=True) != fees_from_fills:
         raise ValueError("SHADOW_FEES_MISMATCH")
