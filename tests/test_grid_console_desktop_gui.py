@@ -71,8 +71,8 @@ class GridConsoleDesktopTests(unittest.TestCase):
             out=Path(folder)/"result.json"
             original = gui.status_through_loopback
             with patch.object(gui, "status_through_loopback",
-                              side_effect=lambda supervisor_db=None: original(
-                                  supervisor_db, react_root=self.react_root)):
+                              side_effect=lambda supervisor_db=None, shadow_db=None: original(
+                                  supervisor_db, shadow_db=shadow_db, react_root=self.react_root)):
                 code=gui.main(["--self-test", "--report", str(out)])
             self.assertEqual(code,0)
             payload=json.loads(out.read_text("utf-8"))
