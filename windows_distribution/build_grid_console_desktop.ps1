@@ -12,7 +12,7 @@ if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
 }
 Push-Location 'frontend'
 try {
-  & npm install --no-audit --no-fund
+  & npm ci --no-audit --no-fund
   if ($LASTEXITCODE -ne 0) { throw 'REACT_NPM_INSTALL_FAILED' }
   & npm run build
   if ($LASTEXITCODE -ne 0) { throw 'REACT_BUILD_FAILED' }
