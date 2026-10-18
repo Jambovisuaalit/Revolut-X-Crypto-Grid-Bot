@@ -48,7 +48,7 @@ export default function App() {
   </section>
   <section className="panel safety" aria-label="Turvatilan tulkinta"><h2>Turvatilan tulkinta</h2>
    <p className={blocked?"danger":"muted"}>{blocked?"Estetty tai turvallista tilaa ei voida vahvistaa":"Paikallinen tallennettu tila — ei pörssivarmennettu"}</p>
-   <p className="muted">Tuntematon riskitila ei tarkoita riskilukituksen puuttumista.</p>
+   {runtime?.risk_lock!=="TRIGGERED"&&<p className="muted">Tuntematon riskitila ei tarkoita riskilukituksen puuttumista.</p>}
   </section>
   <ShadowWorkspace refreshKey={refreshKey}/>
   <EventsPanel events={runtime?.events??[]}/>
