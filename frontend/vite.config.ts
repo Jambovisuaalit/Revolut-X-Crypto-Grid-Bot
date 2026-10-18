@@ -6,5 +6,5 @@ export default defineConfig({
   base: "./",
   build: { outDir: "dist", emptyOutDir: true },
   server: { host: "127.0.0.1", strictPort: true, port: 5173 },
-  test: { environment: "node", include: ["src/**/*.test.ts"] },
+  test: { environment: "node", include: ["src/**/*.test.ts", "src/**/*.test.tsx"] },
 });

@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 
 from eth_shadow_v1.collector_quality import evaluate_quality
 from product_shell.local_runtime_readonly import inspect_local_runtime
+from product_shell.react_assets import load_react_assets
 from eth_shadow_v1.config import Config
 
 ROOT = Path(__file__).resolve().parent
@@ -66,8 +67,13 @@ def snapshot(db_path: Path | None, now_ms: int) -> dict:
     }
 
 
-def make_handler(db_path: Path | None, clock, supervisor_db: Path | None = None) -> type[BaseHTTPRequestHandler]:
+def make_handler(db_path: Path | None, clock, supervisor_db: Path | None = None,
+                 *, ui: str = "legacy", react_root: Path | None = None) -> type[BaseHTTPRequestHandler]:
     """Inject read-only dependencies without global mutation."""
+    if ui not in ("legacy", "react"):
+        raise ValueError("UNKNOWN_UI_MODE")
+    # Validate the compiled React bundle BEFORE binding any socket. No fallback.
+    react_files = load_react_assets(react_root or ROOT / "react_dist") if ui == "react" else None
     class Handler(BaseHTTPRequestHandler):
         server_version = "GridConsole"
         sys_version = ""
@@ -123,7 +129,13 @@ def make_handler(db_path: Path | None, clock, supervisor_db: Path | None = None)
                                   sort_keys=True, ensure_ascii=False).encode("utf-8")
                 self._serve(data, "application/json; charset=utf-8", head=head)
                 return
-            if path.path in FILES:
+            if react_files is not None:
+                asset = react_files.get(path.path)
+                if asset is not None:
+                    body, content_type = asset
+                    self._serve(body, content_type, head=head)
+                    return
+            elif path.path in FILES:
                 name, content_type = FILES[path.path]
                 self._serve((ASSETS / name).read_bytes(), content_type, head=head)
                 return
@@ -147,10 +159,12 @@ def make_handler(db_path: Path | None, clock, supervisor_db: Path | None = None)
 
 
 def local_server(db_path: Path | None = None, port: int = 0, *,
-                 clock=None, supervisor_db: Path | None = None) -> ThreadingHTTPServer:
+                 clock=None, supervisor_db: Path | None = None,
+                 ui: str = "legacy", react_root: Path | None = None) -> ThreadingHTTPServer:
     """Bind *only* to loopback. Never allow LAN/internet hosting."""
     import time
-    handler = make_handler(db_path, clock or (lambda: time.time_ns() // 1_000_000), supervisor_db)
+    handler = make_handler(db_path, clock or (lambda: time.time_ns() // 1_000_000),
+                           supervisor_db, ui=ui, react_root=react_root)
     server = ThreadingHTTPServer(("127.0.0.1", port), handler)
     server.daemon_threads = True
     return server

@@ -1,5 +1,5 @@
-; Grid Console Desktop v0.2 — UNSIGNED DEVELOPMENT ONLY
-; The installed app is a read-only Finnish desktop controller and localhost UI.
+; Grid Console Desktop v0.3 React — UNSIGNED DEVELOPMENT ONLY
+; The installed app bundles a compiled React UI and read-only Python localhost controller.
 ; It does not run trading, authenticate accounts, or start data collection.
 #ifndef BuildDist
   #define BuildDist "..\dist\GridConsoleDesktop"
@@ -10,7 +10,7 @@
 [Setup]
 AppId={{774154E5-975B-4097-9C7C-F2820B8D82C9}
 AppName=Grid Console Desktop (Offline Development Preview)
-AppVersion=0.2.0
+AppVersion=0.3.0
 AppPublisher=Grid Console Developer Preview
 AppPublisherURL=https://github.com/Jambovisuaalit/Revolut-X-Crypto-Grid-Bot
 DefaultDirName={localappdata}\Programs\GridConsoleDesktopPreview

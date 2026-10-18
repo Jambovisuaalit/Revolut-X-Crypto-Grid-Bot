@@ -9,7 +9,7 @@ export const isLocalRuntime = (value: unknown): value is LocalRuntime => {
     ["TRIGGERED","NOT_TRIGGERED","UNKNOWN"].includes(String(x.risk_lock)) &&
     ["FRESH","STALE","UNKNOWN"].includes(String(x.heartbeat)) &&
     (x.heartbeat_age_ms === null || (typeof x.heartbeat_age_ms === "number" && Number.isFinite(x.heartbeat_age_ms))) &&
-    (x.uncertain_order_count === null || (Number.isSafeInteger(x.uncertain_order_count) && Number(x.uncertain_order_count) >= 0)) &&
+    (x.uncertain_order_count === null || (typeof x.uncertain_order_count === "number" && Number.isSafeInteger(x.uncertain_order_count) && x.uncertain_order_count >= 0)) &&
     Array.isArray(x.events) && x.events.length <= 40 &&
     x.events.every((e: unknown) => typeof e === "object" && e !== null && typeof (e as LocalEvent).label === "string" && typeof (e as LocalEvent).time_utc === "string" && typeof (e as LocalEvent).uncertain === "boolean") &&
     x.live_orders === "DISABLED" && x.account_connection === "NOT_CONNECTED" && x.reconciled_for_trading === false;

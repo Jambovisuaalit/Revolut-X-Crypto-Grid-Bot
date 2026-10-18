@@ -35,6 +35,14 @@ jobs:
         run: python -m unittest tests.test_grid_console_v0 tests.test_grid_console_desktop_gui -v
       - name: Complete combined regression suite
         run: python -m unittest discover -s tests -v
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build React for source-only GUI self-test
+        working-directory: frontend
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
       - name: Run local GUI offline HTTP self-test
         run: python windows_distribution/grid_console_desktop.py --self-test --report runtime-artifacts/gui-offline-report.json
       - name: Verify existing risk lock and process recovery tests
