@@ -27,7 +27,7 @@ jobs:
       - name: Install pinned runtime ranges for offline collector imports
         run: python -m pip install -r requirements.txt
       - name: Offline 24h quality preflight
-        run: python -m unittest tests.test_forward_preflight_v06 tests.test_railway_24h_pilot -v
+        run: python -m unittest tests.test_forward_preflight_v06 tests.test_railway_24h_pilot tests.test_railway_3min_probe -v
       - name: Existing shadow engine regression
         run: python -m unittest tests.test_eth_shadow_v1 tests.test_shadow_readonly_workspace -v
       - name: Prevent changes to trading and collector implementation
