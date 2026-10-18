@@ -1,0 +1,43 @@
+name: Grid Console - Fresh Windows Installation Acceptance
+on:
+  push:
+    branches: [feat/grid-console-react-windows-integration-v1]
+    paths:
+      - '.github/workflows/grid-console-clean-windows-install.yml'
+      - 'windows_distribution/Test-CleanWindowsInstall.ps1'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  clean-windows-install-lifecycle:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      LIVE_TRADING: 'false'
+      DRY_RUN: 'true'
+      ACCOUNT_NETWORK_TESTS: 'DISABLED'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download exact previously validated unsigned installer
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 39098477277
+          github-token: ${{ github.token }}
+          name: GRID-CONSOLE-DESKTOP-WINDOWS-UNSIGNED-DEVELOPMENT-NO-LIVE
+          path: downloaded-package
+      - name: Fresh runner installation, local React, SQLite risk, shutdown and uninstall
+        shell: pwsh
+        run: ./windows_distribution/Test-CleanWindowsInstall.ps1
+      - name: Publish redacted acceptance evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: CLEAN-WINDOWS-INSTALL-ACCEPTANCE-NO-LIVE
+          path: clean-install-evidence/*.json
+          if-no-files-found: error
