@@ -168,7 +168,7 @@ jobs:
       - name: Build React assets for source-only GUI smoke
         working-directory: frontend
         run: |
-          npm install --no-audit --no-fund
+          npm ci --no-audit --no-fund
           npm run build
       - run: python -m compileall -q product_shell windows_distribution eth_shadow_v1 tests
       - run: python -m unittest discover -s tests -v
