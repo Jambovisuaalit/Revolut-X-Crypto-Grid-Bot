@@ -1,0 +1,39 @@
+name: Grid Console v0.5 - Shadow Workspace Offline Gate
+on:
+  push:
+    branches: [feat/grid-console-v05-shadow-workspace]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  shadow-offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      LIVE_TRADING: 'false'
+      ACCOUNT_NETWORK_TESTS: DISABLED
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Synthetic accounting and SQLite safety
+        run: python -m unittest tests.test_shadow_readonly_workspace -v
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Frontend locked build and test
+        working-directory: frontend
+        run: |
+          npm ci --no-audit --no-fund
+          npm run typecheck
+          npm test
+          npm run build
+      - name: React/Python offline integration
+        run: python -m unittest tests.test_react_built_bundle tests.test_react_server_integration tests.test_grid_console_desktop_gui -v
+      - name: Trading core unchanged
+        run: |
+          git fetch origin feat/grid-console-v04
+          git diff --exit-code origin/feat/grid-console-v04 HEAD -- eth_shadow_v1 grid_executor.py shadow_runner.py
