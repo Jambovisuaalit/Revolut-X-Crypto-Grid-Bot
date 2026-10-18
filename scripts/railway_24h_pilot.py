@@ -11,6 +11,9 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
+import shutil
+import sys
+import tempfile
 from pathlib import Path
 import sqlite3
 import time
@@ -34,6 +37,50 @@ def read_state(root: Path) -> dict | None:
         return json.loads((root / STATE_FILE).read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
+
+
+
+def status_probe(root: Path) -> dict:
+    """Local volume diagnostics only; no exchange requests, no arming.
+
+    Probe is removed even on failure. Results are emitted without file contents,
+    filesystem paths, secrets or user identifiers.
+    """
+    result = {
+        "schema": "railway-v06-volume-probe-v1",
+        "mounted_path_present": root.is_dir(),
+        "writable": False,
+        "total_bytes": None,
+        "used_bytes": None,
+        "free_bytes": None,
+        "free_reserve_bytes": 256 * 1024 * 1024,
+        "reserve_pass": False,
+        "backup_capacity_verified": False,
+        "status": "BLOCKED",
+    }
+    if not root.is_dir() or root.is_symlink():
+        result["reason"] = "MOUNT_MISSING_OR_SYMLINK"
+        return result
+    try:
+        usage = shutil.disk_usage(root)
+        result.update(total_bytes=usage.total, used_bytes=usage.used, free_bytes=usage.free)
+        # tempfile uses exclusive creation; this is a bounded 1-byte local I/O test.
+        fd, name = tempfile.mkstemp(prefix=".volume-probe-", dir=root)
+        try:
+            with os.fdopen(fd, "wb") as out:
+                out.write(b"1")
+                out.flush()
+                os.fsync(out.fileno())
+            result["writable"] = True
+        finally:
+            os.unlink(name)
+        result["reserve_pass"] = usage.free >= result["free_reserve_bytes"]
+        result["status"] = "LOCAL_VOLUME_CHECK_PASS" if result["reserve_pass"] else "BLOCKED"
+        if not result["reserve_pass"]:
+            result["reason"] = "INSUFFICIENT_FREE_SPACE"
+    except OSError as exc:
+        result["reason"] = "VOLUME_IO_" + type(exc).__name__
+    return result
 
 
 def safe_flags() -> None:
@@ -182,12 +229,24 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="24h public GET collector, fail-closed")
     parser.add_argument("command", choices=["status", "arm", "run"])
     parser.add_argument("--data-dir", type=Path, default=Path("/data"))
+    parser.add_argument("--status-hold-seconds", type=int, default=0,
+                        help="0-5s log-flush time for status only; never runs collector")
     args = parser.parse_args()
     root = args.data_dir
     if args.command == "status":
-        print(json.dumps({"state": read_state(root), "collector_started": False,
-                          "exchange_mutations": 0, "live": "DISABLED"}, sort_keys=True))
-        return 0
+        if not 0 <= args.status_hold_seconds <= 5:
+            parser.error("--status-hold-seconds must be 0..5")
+        report = {"state": read_state(root), "collector_started": False,
+                  "exchange_mutations": 0, "live": "DISABLED",
+                  "volume": status_probe(root)}
+        message = json.dumps(report, sort_keys=True)
+        print(message, flush=True)
+        # Railway sometimes omits stdout from short-lived tasks. An explicit
+        # stderr event and small bounded hold help preserve the audit evidence.
+        print("RAILWAY_V06_STATUS " + message, file=sys.stderr, flush=True)
+        if args.status_hold_seconds:
+            time.sleep(args.status_hold_seconds)
+        return 0 if report["volume"]["status"] == "LOCAL_VOLUME_CHECK_PASS" else 2
     if args.command == "arm":
         print(json.dumps(arm(root, utc_ms()), sort_keys=True))
         return 0
