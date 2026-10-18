@@ -78,7 +78,7 @@ class BackupCapacityTests(unittest.TestCase):
                 self.digest = hashlib.sha256(self.payload).hexdigest()
                 return Result(self.digest)
         fake = FakeSession()
-        with patch("eth_shadow_v1.offsite_backup.check_scratch_separate"):
+        with patch("scripts.offsite_backup_transport.check_scratch_separate"):
             result = offsite_backup(
                 self.db, upload_url="https://archive.example.com/backup",
                 token="a_secret_test_token_123456", scratch_root=self.root,
@@ -100,7 +100,7 @@ class BackupCapacityTests(unittest.TestCase):
         class FakeSession:
             def put(self, *args, **kwargs):
                 return Result()
-        with patch("eth_shadow_v1.offsite_backup.check_scratch_separate"):
+        with patch("scripts.offsite_backup_transport.check_scratch_separate"):
             with self.assertRaisesRegex(RuntimeError, "BACKUP_REMOTE_RECEIPT_MISMATCH"):
                 offsite_backup(self.db, upload_url="https://archive.example.com/store",
                                token="a_secret_test_token_123456", scratch_root=self.root,
