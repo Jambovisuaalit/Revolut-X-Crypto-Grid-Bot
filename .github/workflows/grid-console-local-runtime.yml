@@ -41,7 +41,7 @@ jobs:
       - name: Build React for source-only GUI self-test
         working-directory: frontend
         run: |
-          npm install --no-audit --no-fund
+          npm ci --no-audit --no-fund
           npm run build
       - name: Run local GUI offline HTTP self-test
         run: python windows_distribution/grid_console_desktop.py --self-test --report runtime-artifacts/gui-offline-report.json
