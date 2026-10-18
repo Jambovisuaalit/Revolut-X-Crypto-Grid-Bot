@@ -54,6 +54,44 @@ class ShadowReadonlyTests(unittest.TestCase):
         self.assertEqual(len(view["equity_history"]), 5)
         self.assertEqual(self.path.read_bytes(), before)
 
+    def test_open_virtual_position_reconciles_equity_and_cost_basis(self):
+        other = Path(self.temp.name) / "open-lot.sqlite"
+        payload = fixture()
+        cfg = Config.load(CONFIG_PATH)
+        rules = PairRules.from_dict(payload["pair_rules"])
+        with Journal(other, "open-lot-v05", cfg, rules) as journal:
+            for event in payload["events"][:3]:
+                journal.process(event)
+            report = journal.report()
+        snapshot = inspect_shadow_journal(other)
+        self.assertEqual(snapshot["status"], "READY", snapshot)
+        self.assertGreater(len(snapshot["positions"]), 0)
+        self.assertGreater(Decimal(snapshot["eth_qty"]), Decimal("0"))
+        self.assertEqual(
+            sum(Decimal(position["quantity"]) for position in snapshot["positions"]),
+            Decimal(snapshot["eth_qty"]),
+        )
+        self.assertEqual(
+            sum(Decimal(position["cost_basis_eur"]) for position in snapshot["positions"]),
+            Decimal(snapshot["cost_basis_eur"]),
+        )
+        self.assertLessEqual(Decimal(snapshot["cost_basis_eur"]), Decimal("400"))
+        self.assertAlmostEqual(
+            Decimal(snapshot["equity_eur"]), Decimal(report["final_equity_eur"]),
+            delta=Decimal("0.01"),
+        )
+
+    def test_modified_indexed_fill_fails_closed(self):
+        with sqlite3.connect(self.path) as db:
+            row = db.execute("SELECT fill_id, details_json FROM synthetic_fills LIMIT 1").fetchone()
+            details = __import__("json").loads(row[1])
+            details["fee_eur"] = "123.45"
+            db.execute("UPDATE synthetic_fills SET details_json=? WHERE fill_id=?",
+                       (__import__("json").dumps(details), row[0]))
+        blocked = inspect_shadow_journal(self.path)
+        self.assertEqual(blocked["status"], "BLOCKED")
+        self.assertIsNone(blocked["equity_eur"])
+
     def test_corruption_fails_closed_without_balance_leak(self):
         with sqlite3.connect(self.path) as db:
             db.execute("UPDATE decisions SET state_json=? WHERE seq=1", ('{"tampered":true}',))
