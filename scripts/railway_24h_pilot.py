@@ -165,15 +165,25 @@ def finish(root: Path, state: dict, *, reason: str, now: int) -> dict:
     backup_error = None
     if db.is_file():
         try:
-            backup = sqlite_backup(db, root / "reports" / "collector-backup.sqlite")
-        except (OSError, RuntimeError, sqlite3.Error) as exc:
-            backup_error = type(exc).__name__
-    status = "FINISHED_REVIEW_REQUIRED" if reason == "DEADLINE" and report["data_24h"] == "PASS" and backup and not backup_error else "BLOCKED"
+            from eth_shadow_v1.offsite_backup import offsite_backup
+            # Scratch archive is automatically removed; NEVER duplicate SQLite
+            # on /data. Remote receipt remains pending independent restore QA.
+            backup = offsite_backup(db)
+        except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+            backup_error = type(exc).__name__ + ":" + str(exc)[:100]
+    # A checksum receipt is not an independent download/restore verification.
+    # Manual verification is required before promoting any pilot result.
+    status = ("FINISHED_REVIEW_REQUIRED" if reason == "DEADLINE"
+              and report["data_24h"] == "PASS" and backup
+              and backup.get("status") == "REMOTE_RECEIPT_VERIFIED"
+              and not backup_error else "BLOCKED")
     evidence = {
         "schema": SCHEMA, "status": status, "reason": reason,
         "started_at_ms": state["started_at_ms"], "deadline_at_ms": state["deadline_at_ms"],
         "stopped_at_ms": now, "preflight": report, "backup": backup,
-        "backup_error": backup_error, "live_trading": "DISABLED",
+        "backup_error": backup_error, "backup_restore_verified": False,
+        "offsite_receipt_requires_restore_review": bool(backup),
+        "live_trading": "DISABLED",
         "exchange_mutations": 0, "forward_30d": "NOT_STARTED",
         "economic_approval": "NO_GO",
     }
