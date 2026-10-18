@@ -1,0 +1,57 @@
+name: Grid Console v0.4 - Lock Dependencies and Validate
+on:
+  push:
+    branches: [feat/grid-console-v04]
+    paths:
+      - '.github/workflows/grid-console-v04-lock.yml'
+      - 'frontend/package.json'
+      - 'frontend/src/**'
+      - 'frontend/vite.config.ts'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  generate-lock-and-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      LIVE_TRADING: 'false'
+      ACCOUNT_NETWORK_TESTS: DISABLED
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/grid-console-v04
+          persist-credentials: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Generate npm lockfile from package manifest
+        working-directory: frontend
+        run: npm install --package-lock-only --no-audit --no-fund
+      - name: Commit lockfile to v0.4 feature branch if changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add frontend/package-lock.json
+          if ! git diff --cached --quiet; then
+            git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'build(frontend): pin npm lockfile for reproducible offline UI'
+            git push origin HEAD:feat/grid-console-v04
+          fi
+      - name: Install from lockfile on clean checkout
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+      - name: Strict TypeScript check
+        working-directory: frontend
+        run: npm run typecheck
+      - name: UI and API contract tests
+        working-directory: frontend
+        run: npm test
+      - name: Compile React production assets
+        working-directory: frontend
+        run: npm run build
+      - name: Verify trading core unchanged versus v0.3
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin feat/grid-console-react-windows-integration-v1
+          git diff --exit-code origin/feat/grid-console-react-windows-integration-v1 HEAD -- bot_main.py grid_executor.py supervisor_runtime.py account_readonly.py
