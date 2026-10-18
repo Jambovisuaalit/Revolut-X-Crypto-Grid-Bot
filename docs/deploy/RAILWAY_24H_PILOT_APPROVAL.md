@@ -46,3 +46,14 @@ Monthly base Free $0 if user can select it; Hobby $5/month billed regardless of 
 Current state: **NO_APPROVAL_FOR_CHARGED_PLAN / NO_APPROVAL_FOR_PUBLIC_CAPTURE**. Require explicit confirmation before any Railway deploy, plan change, persistent volume creation, background collector, or HTTP GET traffic.
 
 Current live and commercial statuses stay NO_GO.
+
+## Implemented 24h driver — verification pending
+
+- `scripts/railway_24h_pilot.py` now provides `status` (no HTTP, returns 0), `arm` (exclusive persistent record), and `run` (requires explicit environment flag and prior arm within 15min). Never choose `run` as the default start command.
+- Before first network request, persists `started_at_ms` and the absolute 24-hour `deadline_at_ms` on the mounted Volume. Restart from RUNNING/BLOCKED is **refused**; a crash requires human review and a separately approved new run with an empty/new directory.
+- Finalization writes `reports/final-report.json` with the full read-only preflight and a SQLite online-backup snapshot/hash at `reports/collector-backup.sqlite`; unavailable/corrupt/short history or backup failure is `BLOCKED`. No forwarded economic approval.
+- Deployment safety start command (staged only): `python -m scripts.railway_24h_pilot status --data-dir /data`. No collector ever starts from service creation or a Git push.
+- Operator must create `/data/STOPPED_BY_DEFAULT` before a separately authorized `arm`, and make environment `EXPLICIT_PUBLIC_GET_APPROVAL=I_APPROVE_PUBLIC_GET_24H` available to both arm/run. These are **not set** today.
+- Railway Free plan **requires** app sleep unless using cron; app sleeping suitability for a headless periodic GET worker is not proven. Any unexpected sleep or restart invalidates 24h continuity; do not claim pass without timestamp-based full audit.
+- The 500 MB Volume and 256 MB fail-closed reserve leave limited capacity. Estimate raw order-book growth and inspect free disk before pilot; clean existing data before arming. Volume persists across service stop but back up report and SQLite off-platform before deletion or upgrading.
+- Unauthenticated GET collection remains separately blocked pending explicit API/network authorization. Unit tests never call `run` and never reach Revolut X.
