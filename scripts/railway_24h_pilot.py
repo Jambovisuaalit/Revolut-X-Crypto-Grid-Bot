@@ -162,7 +162,7 @@ def run(root: Path) -> int:
                     now_mono = time.monotonic()
                     if next_tick < now_mono:
                         # Skip missed ticks; do not create catch-up snapshots.
-                        next_tick = now_mono
+                        next_tick = now_mono + POLL_MS / 1000
                     wait_ms = min(
                         max(0, int((next_tick - now_mono) * 1000)),
                         max(0, state["deadline_at_ms"] - utc_ms()),
