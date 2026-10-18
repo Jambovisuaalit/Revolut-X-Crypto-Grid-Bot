@@ -20,7 +20,7 @@ afterEach(()=>{cleanup();vi.unstubAllGlobals();});
 describe("Shadow Workspace read-only safety",()=>{
  it("shows only marked synthetic account figures after validated read",async()=>{
   mock(safe);render(<ShadowWorkspace refreshKey={0}/>);
-  expect(await screen.findByText("1.25 €")).toBeTruthy();
+  expect((await screen.findAllByText("1.25 €")).length).toBe(2);
   expect(screen.getByText(/Synteettinen testiaineisto/)).toBeTruthy();
   expect(screen.getByText(/SIMULOITU · ETH\/EUR · EI LIVE-KAUPPAA/)).toBeTruthy();
   expect(screen.getByText(/Ei oikean tilin saldo/)).toBeTruthy();
