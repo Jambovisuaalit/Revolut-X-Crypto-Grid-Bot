@@ -1,0 +1,109 @@
+name: Grid Console v0.5 - Windows Offline Development Installer
+on:
+  push:
+    branches: [feat/grid-console-v05]
+    paths:
+      - '.github/workflows/grid-console-v05-windows.yml'
+      - 'frontend/**'
+      - 'windows_distribution/**'
+      - 'product_shell/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build-install-test:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      LIVE_TRADING: 'false'
+      DRY_RUN: 'true'
+      ACCOUNT_NETWORK_TESTS: 'DISABLED'
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify committed npm lockfile
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'frontend/package-lock.json')) { throw 'LOCKFILE_MISSING' }
+          Push-Location frontend
+          try {
+            npm ci --no-audit --no-fund
+            if ($LASTEXITCODE -ne 0) { throw 'NPM_CI_FAILED' }
+            npm run typecheck
+            if ($LASTEXITCODE -ne 0) { throw 'TS_FAILED' }
+            npm test
+            if ($LASTEXITCODE -ne 0) { throw 'FRONTEND_TEST_FAILED' }
+            npm run build
+            if ($LASTEXITCODE -ne 0) { throw 'REACT_BUILD_FAILED' }
+          } finally { Pop-Location }
+      - name: Prepare build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install -r requirements.txt 'pyinstaller==6.16.0'
+          if ($LASTEXITCODE -ne 0) { throw 'PYTHON_DEPENDENCIES_FAILED' }
+          choco install innosetup -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'INNO_SETUP_FAILED' }
+      - name: Existing offline regression suite
+        run: python -m unittest discover -s tests -v
+      - name: Build real Windows v0.5 development installer from clean checkout
+        shell: pwsh
+        run: ./windows_distribution/build_grid_console_desktop.ps1
+      - name: Install and verify safe packaged executable
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path v05-evidence | Out-Null
+          $setup=(Resolve-Path 'installer-dist/GridConsoleDesktop-UNSIGNED-DEV-Setup.exe').Path
+          $target=Join-Path $env:RUNNER_TEMP 'grid-console-v05-installed'
+          $proc=Start-Process -FilePath $setup -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',('/DIR='+$target)) -PassThru -Wait
+          if ($proc.ExitCode -ne 0) { throw 'INSTALL_FAILED' }
+          $exe=Join-Path $target 'GridConsoleDesktop.exe'
+          if (-not (Test-Path $exe)) { throw 'EXE_MISSING' }
+          $report=(Join-Path (Get-Location) 'v05-evidence/v05-installed-offline.json')
+          $probe=Start-Process -FilePath $exe -ArgumentList @('--self-test','--report',$report) -Wait -PassThru
+          if ($probe.ExitCode -ne 0) { throw 'INSTALLED_SELF_TEST_FAILED' }
+          $data=Get-Content -LiteralPath $report -Raw | ConvertFrom-Json
+          if ($data.status -ne 'DEV_DESKTOP_PASS' -or $data.live_orders -ne 'DISABLED' -or
+              $data.account_connection -ne 'NOT_CONNECTED' -or $data.exchange_mutations -ne 0 -or
+              $data.sellable_product -ne 'NO_GO') { throw 'UNSAFE_DESKTOP_REPORT' }
+          $fixture=(Join-Path $env:RUNNER_TEMP 'v05-synthetic-shadow.sqlite')
+          $decisions=(Join-Path $env:RUNNER_TEMP 'v05-synthetic-decisions.jsonl')
+          $shadowReport=(Join-Path (Get-Location) 'v05-evidence/v05-shadow-fixture-report.json')
+          python -m scripts.run_eth_eur_shadow --fixture-demo --journal $fixture --decisions $decisions --report $shadowReport
+          if ($LASTEXITCODE -ne 0) { throw 'SHADOW_FIXTURE_GENERATION_FAILED' }
+          $hashBefore=(Get-FileHash -LiteralPath $fixture -Algorithm SHA256).Hash
+          $shadowSmoke=(Join-Path (Get-Location) 'v05-evidence/v05-installed-shadow-smoke.json')
+          $probeShadow=Start-Process -FilePath $exe -ArgumentList @('--self-test','--shadow-db',$fixture,'--report',$shadowSmoke) -Wait -PassThru
+          if ($probeShadow.ExitCode -ne 0) { throw 'INSTALLED_SHADOW_SELF_TEST_FAILED' }
+          $shadowData=Get-Content -LiteralPath $shadowSmoke -Raw | ConvertFrom-Json
+          if ($shadowData.status -ne 'DEV_DESKTOP_PASS' -or
+              $shadowData.shadow_status -ne 'READY' -or
+              $shadowData.shadow_integrity -ne 'PASS' -or
+              $shadowData.shadow_observations -ne 5 -or
+              $shadowData.live_orders -ne 'DISABLED' -or
+              $shadowData.exchange_mutations -ne 0) { throw 'SHADOW_DESKTOP_REPORT_INVALID' }
+          $hashAfter=(Get-FileHash -LiteralPath $fixture -Algorithm SHA256).Hash
+          if ($hashBefore -ne $hashAfter) { throw 'SHADOW_SQLITE_MODIFIED' }
+          $uninstaller=Join-Path $target 'unins000.exe'
+          if (-not (Test-Path $uninstaller)) { throw 'UNINSTALLER_MISSING' }
+          $remove=Start-Process -FilePath $uninstaller -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') -Wait -PassThru
+          if ($remove.ExitCode -ne 0) { throw 'UNINSTALL_FAILED' }
+          if (Test-Path -LiteralPath $exe) { throw 'UNINSTALL_LEFT_EXE' }
+          [ordered]@{schema='grid-console-v05-windows-dev-v1'; commit='${{ github.sha }}'; status='PASS'; live_trading='DISABLED'; release_approval='NO_GO'; installer_sha256=(Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()} |
+            ConvertTo-Json | Set-Content -LiteralPath 'v05-evidence/manifest.json' -Encoding utf8
+      - name: Upload unsigned development evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: GRID-CONSOLE-V05-WINDOWS-UNSIGNED-DEVELOPMENT-NO-LIVE
+          path: |
+            installer-dist/GridConsoleDesktop-UNSIGNED-DEV-Setup.exe
+            v05-evidence/*.json
+          if-no-files-found: warn
