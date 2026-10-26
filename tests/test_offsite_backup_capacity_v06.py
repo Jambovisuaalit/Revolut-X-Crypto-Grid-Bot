@@ -17,7 +17,7 @@ PROBE = {
     "sqlite_book_rows": 36, "accepted_rows": 36,
     "sqlite_all_files_bytes": 299008,
     "accepted_payload_total_bytes": 208710,
-    "cause": "TIMEBOX_COMPLETED",
+    "cause": "TIMEBOX_COMPLETED", "status": "REVIEW_REQUIRED",
     "full_chain_audit": {"status": "PASS"},
 }
 
@@ -112,6 +112,9 @@ class BackupCapacityTests(unittest.TestCase):
         self.assertEqual(result["projected_db_bytes"], 143_523_840)
         self.assertEqual(result["projected_db_with_25pct_margin_bytes"], 179_404_800)
         self.assertIn("25PCT_MARGIN_EXCEEDS_DISK_HEADROOM", result["reasons"])
+        self.assertEqual(result["required_free_volume_bytes"], 447_840_256)
+        self.assertEqual(result["additional_free_bytes_needed"], 4_071_424)
+        self.assertFalse(result["capacity_margin_pass"])
         self.assertIn("OFFSITE_DESTINATION_NOT_CONFIGURED", result["reasons"])
         self.assertEqual(result["status"], "NO_GO")
 
@@ -119,8 +122,29 @@ class BackupCapacityTests(unittest.TestCase):
         result = assess_24h_capacity(PROBE, free_bytes=1_000_000_000,
                     offsite_export_configured=True, remote_restore_verified=True)
         self.assertNotIn("25PCT_MARGIN_EXCEEDS_DISK_HEADROOM", result["reasons"])
+        self.assertEqual(result["additional_free_bytes_needed"], 0)
+        self.assertTrue(result["capacity_margin_pass"])
         self.assertIn("24H_CONTINUITY_UNTESTED", result["reasons"])
         self.assertEqual(result["status"], "NO_GO")
+
+    def test_partial_or_inconsistent_probe_never_calibrates(self):
+        for accepted in (0, 30, 35, 37, None):
+            with self.subTest(accepted_rows=accepted):
+                result = assess_24h_capacity(
+                    {**PROBE, "accepted_rows": accepted}, free_bytes=1_000_000_000)
+                self.assertIn("INSUFFICIENT_CALIBRATION", result["reasons"])
+                self.assertIsNone(result["required_free_volume_bytes"])
+                self.assertFalse(result["capacity_margin_pass"])
+
+    def test_unverified_or_malformed_audit_never_calibrates(self):
+        for audit in (None, "PASS", {}, {"status": "FAIL"}):
+            with self.subTest(audit=audit):
+                result = assess_24h_capacity(
+                    {**PROBE, "full_chain_audit": audit}, free_bytes=1_000_000_000)
+                self.assertIn("UNVERIFIED_PROBE", result["reasons"])
+        result = assess_24h_capacity(
+            {**PROBE, "status": "BLOCKED"}, free_bytes=1_000_000_000)
+        self.assertIn("UNVERIFIED_PROBE", result["reasons"])
 
     def test_unverified_probe_never_passes(self):
         bad = dict(PROBE, full_chain_audit={"status": "FAIL"})

@@ -22,23 +22,27 @@ def assess_24h_capacity(probe: dict, *, free_bytes: int,
     observed = probe.get("sqlite_all_files_bytes")
     total_payload = probe.get("accepted_payload_total_bytes")
     if (type(count) is not int or count < 30 or count > 36
-            or type(accepted) is not int or accepted < 30
+            or type(accepted) is not int or accepted != count
             or type(observed) is not int or observed <= 0
             or type(total_payload) is not int or total_payload <= 0):
         reasons.append("INSUFFICIENT_CALIBRATION")
-    if (probe.get("full_chain_audit", {}).get("status") != "PASS"
-            or probe.get("cause") != "TIMEBOX_COMPLETED"):
+    audit = probe.get("full_chain_audit")
+    if (not isinstance(audit, dict) or audit.get("status") != "PASS"
+            or probe.get("cause") != "TIMEBOX_COMPLETED"
+            or probe.get("status") != "REVIEW_REQUIRED"):
         reasons.append("UNVERIFIED_PROBE")
     if type(free_bytes) is not int or free_bytes < 0:
         reasons.append("INVALID_VOLUME_FREE_SPACE")
-    projected = conservative = None
+    projected = conservative = required_free = extra_free_needed = None
     headroom = max(0, free_bytes - RESERVE) if type(free_bytes) is int else None
     if not reasons:
         # Use total SQLite footprint including schema/index/WAL, not only the
         # smaller raw payload. Scaling even initial fixed costs is conservative.
         projected = int((Decimal(observed) * EXPECTED / Decimal(count)).to_integral_value(rounding=ROUND_CEILING))
         conservative = int((Decimal(projected) * SAFETY_FACTOR).to_integral_value(rounding=ROUND_CEILING))
-        if conservative > headroom:
+        required_free = RESERVE + conservative
+        extra_free_needed = max(0, required_free - free_bytes)
+        if extra_free_needed:
             reasons.append("25PCT_MARGIN_EXCEEDS_DISK_HEADROOM")
     if not offsite_export_configured:
         reasons.append("OFFSITE_DESTINATION_NOT_CONFIGURED")
@@ -58,6 +62,9 @@ def assess_24h_capacity(probe: dict, *, free_bytes: int,
         "free_volume_bytes": free_bytes,
         "required_reserve_bytes": RESERVE,
         "budget_above_reserve_bytes": headroom,
+        "required_free_volume_bytes": required_free,
+        "additional_free_bytes_needed": extra_free_needed,
+        "capacity_margin_pass": extra_free_needed == 0 if extra_free_needed is not None else False,
         "backup_architecture": "TEMP_SCRATCH_TO_REMOTE_HTTPS_NO_DUPLICATE_ON_VOLUME",
         "local_full_backup_required": False,
         "offsite_export_configured": offsite_export_configured,

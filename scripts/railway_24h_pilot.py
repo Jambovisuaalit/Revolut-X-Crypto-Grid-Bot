@@ -19,6 +19,7 @@ import sqlite3
 import time
 
 from scripts.eth_eur_persistent_collector import atomic_json
+from eth_shadow_v1.capacity_preflight import assess_24h_capacity
 
 DURATION_MS = 86_400_000
 POLL_MS = 5000
@@ -90,12 +91,44 @@ def safe_flags() -> None:
         raise RuntimeError("PUBLIC_GET_APPROVAL_REQUIRED")
 
 
+def require_prestart_evidence(root: Path) -> dict:
+    """Fail-closed measured-capacity check. Offline; not a network authorization."""
+    probe_path = root / "three-minute-probe" / "final-report.json"
+    if (probe_path.is_symlink() or probe_path.parent.is_symlink()
+            or not probe_path.is_file()):
+        raise RuntimeError("MEASURED_3MIN_PROBE_REPORT_REQUIRED")
+    try:
+        probe = json.loads(probe_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeError):
+        raise RuntimeError("MEASURED_3MIN_PROBE_REPORT_INVALID") from None
+    if not isinstance(probe, dict):
+        raise RuntimeError("MEASURED_3MIN_PROBE_REPORT_INVALID")
+    try:
+        free = shutil.disk_usage(root).free
+    except OSError:
+        raise RuntimeError("VOLUME_CAPACITY_UNAVAILABLE") from None
+    capacity = assess_24h_capacity(probe, free_bytes=free)
+    fatal = set(capacity["reasons"]).intersection({
+        "INSUFFICIENT_CALIBRATION", "UNVERIFIED_PROBE",
+        "INVALID_VOLUME_FREE_SPACE", "25PCT_MARGIN_EXCEEDS_DISK_HEADROOM",
+    })
+    if fatal:
+        raise RuntimeError("MEASURED_24H_CAPACITY_BLOCKED:" + ",".join(sorted(fatal)))
+    # Configuration only: this neither contacts S3 nor proves a remote restore.
+    from scripts.s3_backup_archive import s3_settings
+    s3_settings()
+    return capacity
+
+
 def arm(root: Path, now: int) -> dict:
     safe_flags()
-    if not root.is_dir() or not (root / "STOPPED_BY_DEFAULT").exists():
+    if (not root.is_dir() or root.is_symlink()
+            or not (root / "STOPPED_BY_DEFAULT").is_file()
+            or (root / "STOPPED_BY_DEFAULT").is_symlink()):
         raise RuntimeError("PILOT_DIRECTORY_NOT_PREPARED")
     if (root / STATE_FILE).exists() or (root / "collector.sqlite").exists():
         raise RuntimeError("PILOT_ALREADY_ARMED_OR_HAS_DATA")
+    require_prestart_evidence(root)
     state = {
         "schema": SCHEMA, "mode": "PUBLIC_GET_ONLY", "symbol": "ETH-EUR",
         "approval": "EXPLICIT_OPERATOR_APPROVAL", "status": "ARMED",
@@ -120,6 +153,7 @@ def begin_once(root: Path, now: int) -> dict:
         raise RuntimeError("PILOT_APPROVAL_EXPIRED")
     if (root / "collector.sqlite").exists():
         raise RuntimeError("UNEXPECTED_COLLECTOR_DB")
+    require_prestart_evidence(root)  # Recheck before first possible GET.
     state["status"] = "RUNNING_NO_AUTO_RESUME"
     state["started_at_ms"] = now
     state["deadline_at_ms"] = now + DURATION_MS

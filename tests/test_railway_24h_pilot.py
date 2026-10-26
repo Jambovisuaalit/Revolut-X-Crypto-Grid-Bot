@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from contextlib import closing
 from pathlib import Path
+from types import SimpleNamespace
 from tempfile import TemporaryDirectory
 import json
 import os
@@ -22,6 +23,18 @@ class BoundedPilotTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name)
         (self.root / "STOPPED_BY_DEFAULT").write_text("disabled\n")
+        probe_dir = self.root / "three-minute-probe"
+        probe_dir.mkdir()
+        (probe_dir / "final-report.json").write_text(json.dumps({
+            "sqlite_book_rows": 36, "accepted_rows": 36,
+            "sqlite_all_files_bytes": 299008,
+            "accepted_payload_total_bytes": 208710,
+            "cause": "TIMEBOX_COMPLETED", "status": "REVIEW_REQUIRED",
+            "full_chain_audit": {"status": "PASS"},
+        }))
+        self.s3_patch = patch("scripts.s3_backup_archive.s3_settings", return_value={})
+        self.s3_patch.start()
+        self.addCleanup(self.s3_patch.stop)
         self.flag_patch = patch.dict(os.environ, FLAGS)
         self.flag_patch.start()
         self.addCleanup(self.flag_patch.stop)
@@ -62,6 +75,38 @@ class BoundedPilotTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "PILOT_NOT_ARMED"):
             begin_once(self.root, NOW)
         self.assertFalse((self.root / "collector.sqlite").exists())
+
+    def test_arm_refuses_missing_or_corrupt_probe_before_state_write(self):
+        probe_path = self.root / "three-minute-probe" / "final-report.json"
+        probe_path.unlink()
+        with self.assertRaisesRegex(RuntimeError, "MEASURED_3MIN_PROBE_REPORT_REQUIRED"):
+            arm(self.root, NOW)
+        probe_path.write_text("{broken")
+        with self.assertRaisesRegex(RuntimeError, "MEASURED_3MIN_PROBE_REPORT_INVALID"):
+            arm(self.root, NOW)
+        self.assertIsNone(read_state(self.root))
+
+    def test_arm_refuses_measured_volume_shortfall(self):
+        with patch("scripts.railway_24h_pilot.shutil.disk_usage",
+                   return_value=SimpleNamespace(free=443_768_832)):
+            with self.assertRaisesRegex(RuntimeError, "25PCT_MARGIN_EXCEEDS_DISK_HEADROOM"):
+                arm(self.root, NOW)
+        self.assertIsNone(read_state(self.root))
+
+    def test_run_rechecks_capacity_before_marking_running(self):
+        arm(self.root, NOW)
+        with patch("scripts.railway_24h_pilot.shutil.disk_usage",
+                   return_value=SimpleNamespace(free=443_768_832)):
+            with self.assertRaisesRegex(RuntimeError, "25PCT_MARGIN_EXCEEDS_DISK_HEADROOM"):
+                begin_once(self.root, NOW + 1000)
+        self.assertEqual(read_state(self.root)["status"], "ARMED")
+
+    def test_arm_rejects_missing_backup_configuration(self):
+        with patch("scripts.s3_backup_archive.s3_settings",
+                   side_effect=RuntimeError("PRIVATE_S3_BACKUP_NOT_CONFIGURED")):
+            with self.assertRaisesRegex(RuntimeError, "PRIVATE_S3_BACKUP_NOT_CONFIGURED"):
+                arm(self.root, NOW)
+        self.assertIsNone(read_state(self.root))
 
     def test_24h_deadline_persists_and_restart_denied(self):
         arm(self.root, NOW)

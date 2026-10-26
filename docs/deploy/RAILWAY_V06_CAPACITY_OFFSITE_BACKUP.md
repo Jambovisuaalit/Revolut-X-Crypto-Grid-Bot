@@ -28,3 +28,11 @@ Target 24h interval: 86400 / 5 = 17280 book observations. **Naive full-footprint
 5. Separate explicit user authorization is required before 24h network collection, no live account access and no trading.
 
 The active Railway service remains pinned to its previous safe status-only commit, unless separately audited and published; creating code on the branch does not change that running source.
+
+## 26.10.2026 — Measured capacity admission gate
+
+The v0.6 `arm` and `run` admission now refuse a missing, malformed, partial or unverified persisted `/data/three-minute-probe/final-report.json`. Both recompute the 25% 24-hour disk margin using *current free bytes*, before recording ARMED or RUNNING. Backup settings must also be present; the check does not contact the backup endpoint.
+
+Measured requirement: **447,840,256 current free bytes** = 268,435,456 reserve + 179,404,800 projected with 25% growth buffer. Previous reported free bytes 443,768,832 are **4,071,424 short**. A larger approved persistent volume is one option. Never lower reserves or discard raw books to bypass this gate.
+
+This code guard does **not** approve costs, verify remote restore, authorize public GET traffic or trading, or prove 24-hour availability. The pilot stays BLOCKED until all separate owner approvals and external evidence pass. No merge to `main`.
